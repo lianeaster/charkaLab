@@ -107,11 +107,14 @@ DISTILLATE_BASE_NAME = "ароматний дистилят (основна си
 # ABV визначає, що реально витягується: спирт (40-70%) — ліпофільні сполуки
 # (терпени, ефірні олії, смоли); вино (11-14%) — переважно водорозчинні
 # (антоціани, таніни, кислоти).
+# profile_contrib: список (характеристика, інтенсивність, kind, ярус летючості) —
+# власний внесок основи у профіль напою. Спирти 40-70% витягують ефірні олії;
+# вина 11-14% несуть водорозчинні таніни/кислоти/антоціани (важка база).
 BASE_PROFILES: Dict[str, Dict] = {
     "спирт пшеничний": {
         "abv": 70,
         "abv_hint": "40–70% — добре витягує ефірні олії, терпени, смоли",
-        "profile": {},
+        "profile_contrib": [],
         "conflicts": set(),
         "synergy": {"свіжий", "цитрусовий", "квітковий", "трав'яний", "хвойний"},
         "note": "Нейтральна основа — підкреслює аромат сировини, не вносить власних нот.",
@@ -119,7 +122,7 @@ BASE_PROFILES: Dict[str, Dict] = {
     "спирт цукровий": {
         "abv": 65,
         "abv_hint": "40–65% — добре витягує ефірні олії; злегка м'якший за пшеничний",
-        "profile": {SWEET: 0.15},
+        "profile_contrib": [(SWEET, 0.15, KIND_TASTE, VOL_HEART)],
         "conflicts": set(),
         "synergy": {"фруктовий", "солодкий", "ягідний", "медовий"},
         "note": "Злегка солодкуватий, м'який — підсилює фруктово-ягідні та медові ноти.",
@@ -127,7 +130,11 @@ BASE_PROFILES: Dict[str, Dict] = {
     "вино червоне": {
         "abv": 13,
         "abv_hint": "11–14% — витягує антоціани, таніни, кислоти; ефірні олії — слабко",
-        "profile": {ASTRINGENT: 0.4, "ягідний": 0.3, SOUR: 0.25},
+        "profile_contrib": [
+            (ASTRINGENT, 0.4, KIND_TASTE, VOL_BASE),
+            ("ягідний", 0.3, KIND_AROMA, VOL_HEART),
+            (SOUR, 0.25, KIND_TASTE, VOL_TOP),
+        ],
         "conflicts": {"квітковий", "медовий", "лавандовий", "ванільний", "цитрусовий"},
         "synergy": {"ягідний", ASTRINGENT, "кісточковий", SOUR, "фруктовий"},
         "note": (
@@ -138,7 +145,11 @@ BASE_PROFILES: Dict[str, Dict] = {
     "вино біле": {
         "abv": 12,
         "abv_hint": "11–13% — витягує антоціани, кислоти; ефірні олії — слабко",
-        "profile": {"свіжий": 0.25, "квітковий": 0.15, SOUR: 0.2},
+        "profile_contrib": [
+            ("свіжий", 0.25, KIND_AROMA, VOL_TOP),
+            ("квітковий", 0.15, KIND_AROMA, VOL_HEART),
+            (SOUR, 0.2, KIND_TASTE, VOL_TOP),
+        ],
         "conflicts": {"смолистий", "деревинний", "землистий", "ялівцевий", "кедровий"},
         "synergy": {"цитрусовий", "квітковий", "свіжий", "медовий", "трав'яний"},
         "note": (
@@ -156,9 +167,12 @@ class ResolvedSelection:
     part: str
     form: str
     pit: str
-    role: str  # main | additional | suggested | balance | harmony | sweetener
+    role: str  # main | additional | suggested | balance | harmony | sweetener | base_spirit
     sweet_add: float = 0.0  # пряма солодкість (цукор), без аромату
     amount: float = 1.0  # частка (доза) інгредієнта; основна сировина = 1.0
+    # готовий внесок у профіль (для основи): список (char, value, kind, volatility).
+    # Якщо заданий — береться напряму, без читання сировини з БД.
+    inline_contrib: Optional[List[Tuple[str, float, str, str]]] = None
 
 
 @dataclass
@@ -193,6 +207,18 @@ def _compound_chars(compound: AromaCompound) -> Dict[str, float]:
 def _add_selection_to_profile(
     db: Session, selection: ResolvedSelection, profile: Profile
 ) -> None:
+    # Основа з готовим внеском (спирт/вино/дистилят) — додаємо напряму.
+    if selection.inline_contrib is not None:
+        for char_name, value, kind, layer in selection.inline_contrib:
+            if value <= 0:
+                continue
+            if kind in (KIND_AROMA, KIND_BOTH):
+                profile.aroma[char_name] += value
+            if kind in (KIND_TASTE, KIND_BOTH):
+                profile.taste[char_name] += value
+            profile.layers[layer][char_name] += value
+        return
+
     is_sweetener = selection.role == "sweetener" or selection.sweet_add > 0
     # Пряма (дозована) солодкість підсолоджувача — цукру чи меду
     if selection.sweet_add > 0:
@@ -564,6 +590,8 @@ def _finalize(
 
     # Основна сировина — повна доза; решту дозуємо за «чистотою» внеску.
     for s in selections:
+        if s.inline_contrib is not None:
+            continue  # основа: внесок уже фінальний, дозування не застосовуємо
         if s.role == "main":
             s.amount = MAIN_AMOUNT
         else:
@@ -843,6 +871,7 @@ def _make_variant(
             amount=round(s.amount, 2),
         )
         for s in selections
+        if s.role != "base_spirit"  # основа показується окремо у банері
     ]
     suggested = [s.name for s in selections if s.role == "suggested"]
 
@@ -964,6 +993,55 @@ def _feasibility(
     )
 
 
+def _distillate_contribution(
+    db: Session, main_sel
+) -> List[Tuple[str, float, str, str]]:
+    """Внесок ароматного дистиляту: леткі (top/heart) аромосполуки основної
+    сировини, на 50% інтенсивності. Таніни/антоціани/кислоти (taste) не переходять
+    при дистиляції; важкі (base) аромосполуки переходять слабко (×0.25)."""
+    rows = db.scalars(
+        select(MaterialCompound).where(
+            MaterialCompound.raw_material_id == main_sel.material_id,
+            MaterialCompound.part == main_sel.part,
+            MaterialCompound.form == main_sel.form,
+        )
+    ).all()
+    if not rows:  # fallback: будь-яка part/form тієї ж сировини
+        rows = db.scalars(
+            select(MaterialCompound).where(
+                MaterialCompound.raw_material_id == main_sel.material_id
+            )
+        ).all()
+    contrib: Dict[str, Tuple[float, str]] = {}
+    for mc in rows:
+        compound = db.get(AromaCompound, mc.compound_id)
+        if compound is None or compound.kind == KIND_TASTE:
+            continue  # лише аромат переходить у дистилят
+        layer = compound.volatility or VOL_HEART
+        # важкі (base) аромосполуки переходять слабше за леткі
+        factor = 0.25 if layer == VOL_BASE else 0.5
+        for char_name, weight in _compound_chars(compound).items():
+            value = round(mc.intensity * weight * factor, 3)
+            if value <= 0:
+                continue
+            prev = contrib.get(char_name)
+            if prev is None or value > prev[0]:
+                contrib[char_name] = (value, layer)
+    return [(c, v, KIND_AROMA, lyr) for c, (v, lyr) in contrib.items()]
+
+
+def _base_contribution(
+    db: Session, base_name: Optional[str], main_sel
+) -> List[Tuple[str, float, str, str]]:
+    """Власний внесок основи у профіль напою."""
+    if not base_name:
+        return []
+    if base_name == DISTILLATE_BASE_NAME:
+        return _distillate_contribution(db, main_sel)
+    bp = BASE_PROFILES.get(base_name)
+    return list(bp["profile_contrib"]) if bp else []
+
+
 def _base_influence(
     base_name: Optional[str],
     desired_set: Set[str],
@@ -1024,45 +1102,26 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
 
     base_name: Optional[str] = None
     base_conflict_chars: Set[str] = set()
-    distillate_bp: Optional[Dict] = None  # динамічний профіль для дистиляту
+    distillate_bp: Optional[Dict] = None  # динамічний профіль для дистиляту (банер)
+    base_contrib: List[Tuple[str, float, str, str]] = []
     if req.base_id is not None:
         base = db.get(Base_, req.base_id)
         base_name = base.name if base else None
         if base_name and base_name in BASE_PROFILES:
             base_conflict_chars = BASE_PROFILES[base_name]["conflicts"]
-        elif base_name == DISTILLATE_BASE_NAME:
-            # Будуємо профіль дистиляту з аромосполук основної сировини.
-            # Дистиляція переносить леткі ноти (top/heart), але не таніни/кислоти.
-            # Ефект: ABV ~75%, синергія = весь аромат основної сировини, нульовий конфлікт.
-            main_sel = req.main_material
-            breakdown = _option_breakdown(db, main_sel.material_id)
-            # Пробуємо точний збіг, потім — будь-який варіант тієї ж part/form
-            option_chans = breakdown.get((main_sel.part, main_sel.form, main_sel.pit), {})
-            if not option_chans:
-                for (p, f, _pit), chans in breakdown.items():
-                    if p == main_sel.part and f == main_sel.form and chans:
-                        option_chans = chans
-                        break
-            if not option_chans and breakdown:
-                option_chans = next(iter(breakdown.values()))
-            dist_profile: Dict[str, float] = {}
-            for key, val in option_chans.items():
-                if not key.startswith("aroma::"):
-                    continue
-                char_name = key[len("aroma::"):]
-                # Перевіряємо летючість сполук — дистилят переважно несе top/heart
-                dist_profile[char_name] = round(val * 0.5, 3)  # 50% від свіжого
-            synergy_chars = set(dist_profile.keys())
+        # Власний внесок основи у профіль напою (реальний, не лише банер)
+        base_contrib = _base_contribution(db, base_name, req.main_material)
+        if base_name == DISTILLATE_BASE_NAME:
+            synergy_chars = {c for c, _v, _k, _l in base_contrib}
             distillate_bp = {
                 "abv": 75,
                 "abv_hint": "70–85% — концентрує леткі ефірні олії та терпени основної сировини",
-                "profile": dist_profile,
                 "conflicts": set(),
                 "synergy": synergy_chars,
                 "note": (
-                    f"Ароматний дистилят із основної сировини — підсилює та закріплює "
-                    f"характер головного інгредієнта. Переносить леткі (top/heart) "
-                    f"аромосполуки; таніни та антоціани при дистиляції не переходять."
+                    "Ароматний дистилят із основної сировини — підсилює та закріплює "
+                    "характер головного інгредієнта. Переносить леткі (top/heart) "
+                    "аромосполуки; таніни та антоціани при дистиляції не переходять."
                 ),
             }
 
@@ -1076,6 +1135,20 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
             role="main",
         )
     ]
+    # Основа з власним внеском бере участь у профілі як окремий елемент,
+    # але не показується серед інгредієнтів (вона у банері «Вплив основи»).
+    if base_contrib:
+        chosen.append(
+            ResolvedSelection(
+                material_id=-1,
+                name=base_name or "основа",
+                part="whole",
+                form="na",
+                pit="na",
+                role="base_spirit",
+                inline_contrib=base_contrib,
+            )
+        )
     for add in req.additional_materials:
         chosen.append(
             ResolvedSelection(

@@ -824,6 +824,7 @@ SEED_DATA: Dict = {
         "спирт цукровий",
         "вино червоне",
         "вино біле",
+        "ароматний дистилят (основна сировина)",
     ],
     "compounds": COMPOUNDS,
     "materials": MATERIALS,

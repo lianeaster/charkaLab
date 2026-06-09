@@ -107,7 +107,12 @@ export default function App() {
         </Section>
 
         <Section step={3} title="Основа напою">
-          <BaseSelector bases={bases} value={baseId} onChange={setBaseId} />
+          <BaseSelector
+            bases={bases}
+            value={baseId}
+            onChange={setBaseId}
+            mainMaterialName={mainMaterial?.name ?? null}
+          />
         </Section>
 
         <Section

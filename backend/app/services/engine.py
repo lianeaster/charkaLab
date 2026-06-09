@@ -99,6 +99,10 @@ LAYER_DOSE_CAP = {VOL_TOP: 0.4, VOL_HEART: 0.85, VOL_BASE: 0.55}
 # Поріг, нижче якого база вважається слабкою → додаємо ноту для післясмаку
 BASE_MIN = 0.5
 
+# Спеціальна назва для динамічної основи — дистилят з основної сировини.
+# Реальний профіль будується у generate() з аромосполук головної сировини.
+DISTILLATE_BASE_NAME = "ароматний дистилят (основна сировина)"
+
 # Профілі основ: власний смаковий внесок, ABV-рекомендації, конфлікти, синергія.
 # ABV визначає, що реально витягується: спирт (40-70%) — ліпофільні сполуки
 # (терпени, ефірні олії, смоли); вино (11-14%) — переважно водорозчинні
@@ -964,12 +968,14 @@ def _base_influence(
     base_name: Optional[str],
     desired_set: Set[str],
     variants: List[RecipeVariant],
-) -> Optional["BaseInfluence"]:
+    *,
+    dynamic_bp: Optional[Dict] = None,
+) -> Optional[BaseInfluence]:
     """Аналіз впливу основи: власний профіль, конфлікти з бажаним профілем,
-    синергія, ABV-рекомендація."""
+    синергія, ABV-рекомендація. dynamic_bp задається ззовні для дистиляту."""
     if not base_name:
         return None
-    bp = BASE_PROFILES.get(base_name)
+    bp = dynamic_bp or BASE_PROFILES.get(base_name)
     if bp is None:
         return None
 
@@ -979,7 +985,8 @@ def _base_influence(
         best = max(variants, key=lambda v: v.match_score)
         present = {s.name for s in best.aroma_profile + best.taste_profile if s.score > 0}
         conflicts = bp["conflicts"] & present  # конфліктує з тим, що реально є у варіанті
-    synergy = bp["synergy"] & desired_set
+    synergy_all = bp["synergy"]
+    synergy = synergy_all & desired_set  # з бажаного профілю — для повідомлення
 
     parts = []
     if conflicts:
@@ -990,6 +997,12 @@ def _base_influence(
     if synergy:
         parts.append(
             f"Основа підсилює: «{', '.join(sorted(synergy))}»."
+        )
+    elif synergy_all and dynamic_bp:
+        # Для дистиляту — показуємо ноти, які він несе, навіть якщо не в desired
+        top_notes = sorted(synergy_all)[:6]
+        parts.append(
+            f"Дистилят несе аромат основної сировини: «{', '.join(top_notes)}»."
         )
 
     return BaseInfluence(
@@ -1011,11 +1024,47 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
 
     base_name: Optional[str] = None
     base_conflict_chars: Set[str] = set()
+    distillate_bp: Optional[Dict] = None  # динамічний профіль для дистиляту
     if req.base_id is not None:
         base = db.get(Base_, req.base_id)
         base_name = base.name if base else None
         if base_name and base_name in BASE_PROFILES:
             base_conflict_chars = BASE_PROFILES[base_name]["conflicts"]
+        elif base_name == DISTILLATE_BASE_NAME:
+            # Будуємо профіль дистиляту з аромосполук основної сировини.
+            # Дистиляція переносить леткі ноти (top/heart), але не таніни/кислоти.
+            # Ефект: ABV ~75%, синергія = весь аромат основної сировини, нульовий конфлікт.
+            main_sel = req.main_material
+            breakdown = _option_breakdown(db, main_sel.material_id)
+            # Пробуємо точний збіг, потім — будь-який варіант тієї ж part/form
+            option_chans = breakdown.get((main_sel.part, main_sel.form, main_sel.pit), {})
+            if not option_chans:
+                for (p, f, _pit), chans in breakdown.items():
+                    if p == main_sel.part and f == main_sel.form and chans:
+                        option_chans = chans
+                        break
+            if not option_chans and breakdown:
+                option_chans = next(iter(breakdown.values()))
+            dist_profile: Dict[str, float] = {}
+            for key, val in option_chans.items():
+                if not key.startswith("aroma::"):
+                    continue
+                char_name = key[len("aroma::"):]
+                # Перевіряємо летючість сполук — дистилят переважно несе top/heart
+                dist_profile[char_name] = round(val * 0.5, 3)  # 50% від свіжого
+            synergy_chars = set(dist_profile.keys())
+            distillate_bp = {
+                "abv": 75,
+                "abv_hint": "70–85% — концентрує леткі ефірні олії та терпени основної сировини",
+                "profile": dist_profile,
+                "conflicts": set(),
+                "synergy": synergy_chars,
+                "note": (
+                    f"Ароматний дистилят із основної сировини — підсилює та закріплює "
+                    f"характер головного інгредієнта. Переносить леткі (top/heart) "
+                    f"аромосполуки; таніни та антоціани при дистиляції не переходять."
+                ),
+            }
 
     chosen: List[ResolvedSelection] = [
         ResolvedSelection(
@@ -1123,7 +1172,9 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
             break
 
     feasibility = _feasibility(db, chosen, desired_names, unique)
-    base_infl = _base_influence(base_name, desired_set, unique)
+    base_infl = _base_influence(
+        base_name, desired_set, unique, dynamic_bp=distillate_bp
+    )
 
     return GenerateResponse(
         base=base_name,

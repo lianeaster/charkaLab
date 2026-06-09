@@ -92,6 +92,17 @@ class RecipeVariant(BaseModel):
     pyramid: List[PyramidLayer] = Field(default_factory=list)
 
 
+class BaseInfluence(BaseModel):
+    name: str
+    abv_hint: str = ""
+    note: str = ""
+    # характеристики бажаного профілю, що конфліктують з основою
+    conflicts: List[str] = Field(default_factory=list)
+    # характеристики бажаного профілю, що синергують з основою
+    synergy: List[str] = Field(default_factory=list)
+    message: str = ""
+
+
 class ProfileFeasibility(BaseModel):
     # ok | dominated | impossible
     status: str = "ok"
@@ -108,3 +119,4 @@ class GenerateResponse(BaseModel):
     desired: List[str]
     variants: List[RecipeVariant]
     feasibility: ProfileFeasibility = Field(default_factory=ProfileFeasibility)
+    base_influence: Optional[BaseInfluence] = None

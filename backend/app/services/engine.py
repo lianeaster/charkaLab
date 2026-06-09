@@ -32,6 +32,7 @@ from ..models import (
     VOL_TOP,
 )
 from ..schemas import (
+    BaseInfluence,
     CharacteristicScore,
     CompoundContribution,
     GenerateRequest,
@@ -97,6 +98,51 @@ SWEETENER_AROMA = 0.6
 LAYER_DOSE_CAP = {VOL_TOP: 0.4, VOL_HEART: 0.85, VOL_BASE: 0.55}
 # Поріг, нижче якого база вважається слабкою → додаємо ноту для післясмаку
 BASE_MIN = 0.5
+
+# Профілі основ: власний смаковий внесок, ABV-рекомендації, конфлікти, синергія.
+# ABV визначає, що реально витягується: спирт (40-70%) — ліпофільні сполуки
+# (терпени, ефірні олії, смоли); вино (11-14%) — переважно водорозчинні
+# (антоціани, таніни, кислоти).
+BASE_PROFILES: Dict[str, Dict] = {
+    "спирт пшеничний": {
+        "abv": 70,
+        "abv_hint": "40–70% — добре витягує ефірні олії, терпени, смоли",
+        "profile": {},
+        "conflicts": set(),
+        "synergy": {"свіжий", "цитрусовий", "квітковий", "трав'яний", "хвойний"},
+        "note": "Нейтральна основа — підкреслює аромат сировини, не вносить власних нот.",
+    },
+    "спирт цукровий": {
+        "abv": 65,
+        "abv_hint": "40–65% — добре витягує ефірні олії; злегка м'якший за пшеничний",
+        "profile": {SWEET: 0.15},
+        "conflicts": set(),
+        "synergy": {"фруктовий", "солодкий", "ягідний", "медовий"},
+        "note": "Злегка солодкуватий, м'який — підсилює фруктово-ягідні та медові ноти.",
+    },
+    "вино червоне": {
+        "abv": 13,
+        "abv_hint": "11–14% — витягує антоціани, таніни, кислоти; ефірні олії — слабко",
+        "profile": {ASTRINGENT: 0.4, "ягідний": 0.3, SOUR: 0.25},
+        "conflicts": {"квітковий", "медовий", "лавандовий", "ванільний", "цитрусовий"},
+        "synergy": {"ягідний", ASTRINGENT, "кісточковий", SOUR, "фруктовий"},
+        "note": (
+            "Танінний, ягідний, кислотний. Витягує переважно водорозчинні сполуки. "
+            "Конфліктує з ніжними квітковими та ванільно-медовими нотами — танін їх перебиває."
+        ),
+    },
+    "вино біле": {
+        "abv": 12,
+        "abv_hint": "11–13% — витягує антоціани, кислоти; ефірні олії — слабко",
+        "profile": {"свіжий": 0.25, "квітковий": 0.15, SOUR: 0.2},
+        "conflicts": {"смолистий", "деревинний", "землистий", "ялівцевий", "кедровий"},
+        "synergy": {"цитрусовий", "квітковий", "свіжий", "медовий", "трав'яний"},
+        "note": (
+            "Свіже, квіткове, кислотне. Добре з цитрусово-квітковими профілями. "
+            "Конфліктує з важкими смолистими та деревинними нотами."
+        ),
+    },
+}
 
 
 @dataclass
@@ -497,6 +543,7 @@ def _finalize(
     *,
     max_ingredients: int = MAX_INGREDIENTS,
     sweetener: str = "auto",  # auto | honey | sugar
+    base_conflict_chars: Set[str] = frozenset(),
 ) -> Tuple[List[ResolvedSelection], List[str]]:
     """Дозування інгредієнтів + балансування смаку + мінімум інгредієнтів.
 
@@ -549,15 +596,18 @@ def _finalize(
 
         mid = part = form = pit = None
         block = used | honey_block
+        # Конфлікти з основою розширюють «шум» при оцінці кандидатів: інгредієнти,
+        # що підсилюють конфліктні ноти, отримують нижчий net і не обираються.
+        effective_desired = desired_set - base_conflict_chars
         # 1а) прицільно підсилюємо найслабшу бажану ноту чистою сировиною
         if target_char is not None:
-            for c in _find_candidates(db, {target_char}, block, desired_set):
+            for c in _find_candidates(db, {target_char}, block, effective_desired):
                 if c[4] > 0:  # net > 0 — підсилює, майже не шумить
                     mid, part, form, pit = c[0], c[1], c[2], c[3]
                     break
         # 1б) інакше (для добору мінімуму) — будь-який чистий гармонійний інгредієнт
         if mid is None:
-            harm = _find_harmony(db, desired_set, block)
+            harm = _find_harmony(db, effective_desired, block)
             if harm is None:
                 break
             mid, part, form, pit, _reinf = harm
@@ -584,7 +634,7 @@ def _finalize(
         prof = _build_profile(db, selections)
         if prof.layer_total(VOL_BASE) < BASE_MIN:
             block = used | honey_block
-            for c in _find_candidates(db, desired_set, block, desired_set):
+            for c in _find_candidates(db, effective_desired, block, effective_desired):
                 if c[4] <= 0:  # шумна — пропускаємо
                     continue
                 if _option_layer(db, c[0], c[1], c[2], c[3]) != VOL_BASE:
@@ -910,6 +960,48 @@ def _feasibility(
     )
 
 
+def _base_influence(
+    base_name: Optional[str],
+    desired_set: Set[str],
+    variants: List[RecipeVariant],
+) -> Optional["BaseInfluence"]:
+    """Аналіз впливу основи: власний профіль, конфлікти з бажаним профілем,
+    синергія, ABV-рекомендація."""
+    if not base_name:
+        return None
+    bp = BASE_PROFILES.get(base_name)
+    if bp is None:
+        return None
+
+    conflicts = bp["conflicts"] & desired_set  # конфліктує з тим, що ми хочемо
+    # Якщо бажаний профіль не перетинається з конфліктами — перевіримо найкращий варіант
+    if not conflicts and variants:
+        best = max(variants, key=lambda v: v.match_score)
+        present = {s.name for s in best.aroma_profile + best.taste_profile if s.score > 0}
+        conflicts = bp["conflicts"] & present  # конфліктує з тим, що реально є у варіанті
+    synergy = bp["synergy"] & desired_set
+
+    parts = []
+    if conflicts:
+        parts.append(
+            f"Ноти «{', '.join(sorted(conflicts))}» конфліктують із цією основою — "
+            "таніни або кислота можуть їх перебити."
+        )
+    if synergy:
+        parts.append(
+            f"Основа підсилює: «{', '.join(sorted(synergy))}»."
+        )
+
+    return BaseInfluence(
+        name=base_name,
+        abv_hint=bp["abv_hint"],
+        note=bp["note"],
+        conflicts=sorted(conflicts),
+        synergy=sorted(synergy),
+        message=" ".join(parts),
+    )
+
+
 def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
     desired_rows = db.scalars(
         select(Characteristic).where(Characteristic.id.in_(req.desired_characteristics))
@@ -918,9 +1010,12 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
     desired_set = set(desired_names)
 
     base_name: Optional[str] = None
+    base_conflict_chars: Set[str] = set()
     if req.base_id is not None:
         base = db.get(Base_, req.base_id)
         base_name = base.name if base else None
+        if base_name and base_name in BASE_PROFILES:
+            base_conflict_chars = BASE_PROFILES[base_name]["conflicts"]
 
     chosen: List[ResolvedSelection] = [
         ResolvedSelection(
@@ -977,7 +1072,9 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
 
     # A) Повна композиція під профіль — багата, до MAX_INGREDIENTS, авто-баланс.
     full_sel, full_notes = _finalize(
-        db, list(greedy), desired_set, max_ingredients=MAX_INGREDIENTS, sweetener="auto"
+        db, list(greedy), desired_set,
+        max_ingredients=MAX_INGREDIENTS, sweetener="auto",
+        base_conflict_chars=base_conflict_chars,
     )
     variants.append(
         _make_variant(db, "Повна композиція під профіль", full_sel, desired_names, full_notes)
@@ -988,7 +1085,9 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
 
     # B) Лаконічна композиція — лише обрана сировина + мінімум для покриття/балансу.
     lean_sel, lean_notes = _finalize(
-        db, list(chosen), desired_set, max_ingredients=MIN_INGREDIENTS, sweetener="auto"
+        db, list(chosen), desired_set,
+        max_ingredients=MIN_INGREDIENTS, sweetener="auto",
+        base_conflict_chars=base_conflict_chars,
     )
     variants.append(
         _make_variant(
@@ -1001,7 +1100,9 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
         alt = "sugar" if full_sweet == HONEY_NAME else "honey"
         alt_label = SUGAR_NAME if alt == "sugar" else HONEY_NAME
         alt_sel, alt_notes = _finalize(
-            db, list(greedy), desired_set, max_ingredients=MAX_INGREDIENTS, sweetener=alt
+            db, list(greedy), desired_set,
+            max_ingredients=MAX_INGREDIENTS, sweetener=alt,
+            base_conflict_chars=base_conflict_chars,
         )
         variants.append(
             _make_variant(
@@ -1022,10 +1123,12 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
             break
 
     feasibility = _feasibility(db, chosen, desired_names, unique)
+    base_infl = _base_influence(base_name, desired_set, unique)
 
     return GenerateResponse(
         base=base_name,
         desired=desired_names,
         variants=unique,
         feasibility=feasibility,
+        base_influence=base_infl,
     )

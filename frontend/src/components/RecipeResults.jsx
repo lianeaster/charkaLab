@@ -206,6 +206,38 @@ function VariantCard({ variant, index }) {
   );
 }
 
+function BaseInfluenceBanner({ influence }) {
+  if (!influence) return null;
+  const hasConflict = influence.conflicts?.length > 0;
+  const hasSynergy = influence.synergy?.length > 0;
+  if (!hasConflict && !hasSynergy && !influence.note) return null;
+
+  return (
+    <div className="rounded-2xl border border-charka-200 bg-charka-50/60 p-4">
+      <div className="mb-1 flex items-center gap-2 font-semibold text-charka-700">
+        <span aria-hidden>🍶</span>
+        Вплив основи: {influence.name}
+      </div>
+      <p className="text-sm text-stone-600">{influence.note}</p>
+      {influence.abv_hint && (
+        <p className="mt-1 text-xs text-stone-400">{influence.abv_hint}</p>
+      )}
+      {hasConflict && (
+        <p className="mt-2 text-sm text-amber-800">
+          <span className="font-medium">Конфліктує з профілем:</span>{" "}
+          {influence.conflicts.join(", ")} — ці ноти можуть бути пригнічені.
+        </p>
+      )}
+      {hasSynergy && (
+        <p className="mt-1 text-sm text-charka-700">
+          <span className="font-medium">Підсилює:</span>{" "}
+          {influence.synergy.join(", ")}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function FeasibilityBanner({ feasibility }) {
   if (!feasibility || feasibility.status === "ok") return null;
   const impossible = feasibility.status === "impossible";
@@ -243,6 +275,7 @@ export default function RecipeResults({ result }) {
           {result.desired.join(", ") || "не задано"}
         </span>
       </div>
+      <BaseInfluenceBanner influence={result.base_influence} />
       <FeasibilityBanner feasibility={result.feasibility} />
       {result.variants.map((v, i) => (
         <VariantCard key={i} variant={v} index={i} />

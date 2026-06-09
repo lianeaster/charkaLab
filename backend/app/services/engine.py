@@ -52,6 +52,10 @@ MAX_INGREDIENTS = 7
 # Цільова виразність кожної бажаної характеристики; поки нота слабша — додаємо
 # ще чистих підсилювачів.
 TARGET_STRENGTH = 0.8
+# Мінімальний внесок інгредієнта саме в цільову ноту, щоб вважати, що він її
+# реально підсилює. Якщо жодна доступна сировина не дає стільки «чисто» —
+# ноту вважаємо недосяжною й припиняємо марні додавання.
+MIN_REINFORCE = 0.3
 MAX_BALANCE_STEPS = 3
 
 # Базові смакові осі балансу
@@ -81,6 +85,42 @@ W_PRECISION = 0.35  # яка частка сигналу припадає сам
 # Штраф за «шум» (характеристики поза бажаним профілем) під час відбору сировини.
 # Чим вищий — тим неохочіше алгоритм бере інгредієнти, що тягнуть сторонні ноти.
 OFF_PENALTY = 0.8
+
+# «Споріднені ноти»: коли користувач просить певну характеристику, деякі сусідні
+# ноти сприймаються не як чистий шум, а як ЧАСТКОВЕ її втілення. Це дозволяє
+# алгоритму брати сировину на кшталт м'яти під «свіжий» (її ментолово-охолоджуючі
+# ноти — родичі свіжості), а не відкидати її як надто «шумну».
+# Формат: бажана_нота -> {споріднена_нота: частка_спорідненості (0..1)}.
+KIN: Dict[str, Dict[str, float]] = {
+    "свіжий": {
+        "зелений": 0.6,  # зелено-листяна свіжість (огірок, листковий спирт) — чиста
+        "ментоловий": 0.6,
+        "м'ятний": 0.6,
+        "охолоджуючий": 0.6,
+        "евкаліптовий": 0.5,
+        "камфорний": 0.4,
+    },
+}
+
+
+def _split_on_off(
+    name: str, value: float, desired_set: Set[str]
+) -> Tuple[float, float]:
+    """Розкласти внесок ноти на «корисний» (on) і «шум» (off) з урахуванням
+    спорідненості. Бажана нота — повністю on; солодкість — нейтральна; споріднена
+    до якоїсь бажаної — частково on, частково off; решта — повністю off."""
+    if name in desired_set:
+        return value, 0.0
+    if name == SWEET:
+        return 0.0, 0.0
+    best_kin = 0.0
+    for d in desired_set:
+        w = KIN.get(d, {}).get(name, 0.0)
+        if w > best_kin:
+            best_kin = w
+    if best_kin > 0.0:
+        return value * best_kin, value * (1.0 - best_kin)
+    return 0.0, value
 
 # Дозування інгредієнтів. Основна сировина йде в повному обсязі (MAIN_AMOUNT),
 # а дозу решти алгоритм підбирає сам у межах [DOSE_MIN, DOSE_MAX] залежно від
@@ -299,15 +339,20 @@ def _score(profile: Profile, desired_names: List[str]) -> float:
     capped = [min(s, 1.0) for s in scores]
     strength = sum(capped) / len(capped)
 
+    # Точність рахуємо з урахуванням спорідненості: ноти-родичі бажаних (напр.
+    # ментоловий/охолоджуючий для «свіжий») лише частково вважаються «шумом».
     on_signal = sum(scores)
     off_signal = 0.0
     for name, value in profile.aroma.items():
         if name not in desired_set:
-            off_signal += value
+            _on, off_part = _split_on_off(name, value, desired_set)
+            on_signal += _on
+            off_signal += off_part
     for name, value in profile.taste.items():
-        # солодкість зазвичай додаємо навмисно (баланс) — не вважаємо «шумом»
-        if name not in desired_set and name != SWEET:
-            off_signal += value
+        if name not in desired_set:
+            _on, off_part = _split_on_off(name, value, desired_set)
+            on_signal += _on
+            off_signal += off_part
     total_signal = on_signal + off_signal
     precision = on_signal / total_signal if total_signal > 0 else 0.0
 
@@ -364,11 +409,31 @@ def _option_net(
     off = 0.0
     for key, value in chans.items():
         name = key.split("::", 1)[1]
-        if name in desired_set:
-            on += value
-        elif name != SWEET:
-            off += value
+        on_part, off_part = _split_on_off(name, value, desired_set)
+        on += on_part
+        off += off_part
     return on, off, on - OFF_PENALTY * off
+
+
+def _overpowers(chans: Dict[str, float], desired_set: Set[str]) -> bool:
+    """Чи «забиває» опція профіль: її найгучніша СТОРОННЯ нота (поза бажаним,
+    крім солодкого) перевищує суму всіх корисних нот, які вона дає.
+
+    Споріднені ноти (ментоловий тощо) тут рахуються повноцінно як сторонні —
+    бо саме їхній фактичний рівень видно у профілі/піраміді/радарі. Тобто м'ята,
+    що дає свіжість 1.3, але ментол 2.0, вважається такою, що перебиває.
+    """
+    merged: Dict[str, float] = defaultdict(float)
+    for key, value in chans.items():
+        merged[key.split("::", 1)[1]] += value
+    on_desired = 0.0
+    max_off = 0.0
+    for name, value in merged.items():
+        if name in desired_set:
+            on_desired += value
+        elif name != SWEET and value > max_off:
+            max_off = value
+    return max_off > on_desired
 
 
 def _option_layer(db: Session, material_id: int, part: str, form: str, pit: str) -> str:
@@ -538,6 +603,50 @@ def _find_taste_provider(
     return best[0], best[1], best[2], best[3]
 
 
+def _best_for_char(
+    db: Session, char: str, exclude_ids: Set[int], desired_set: Set[str]
+) -> Optional[Tuple[int, str, str, str, float]]:
+    """Сировина, що дає НАЙБІЛЬШЕ саме характеристики `char` (аромат+смак),
+    майже не шумлячи (net > 0). Повертає (mid, part, form, pit, char_value).
+
+    На відміну від _find_candidates, ранжує за фактичним внеском у цільову ноту,
+    а не за загальним net профілю — щоб не брати ягоду з мізерним «свіжим», але
+    потужним «ягідним».
+    """
+    char_id = db.scalar(select(Characteristic.id).where(Characteristic.name == char))
+    if char_id is None:
+        return None
+    material_ids = db.scalars(
+        select(MaterialCompound.raw_material_id)
+        .join(
+            CompoundCharacteristic,
+            CompoundCharacteristic.compound_id == MaterialCompound.compound_id,
+        )
+        .where(
+            CompoundCharacteristic.characteristic_id == char_id,
+            MaterialCompound.raw_material_id.notin_(exclude_ids),
+        )
+        .distinct()
+    ).all()
+    best: Optional[Tuple[int, str, str, str, float]] = None
+    best_key: Optional[Tuple[float, float]] = None
+    for mid in material_ids:
+        for (part, form, pit), chans in _option_breakdown(db, mid).items():
+            tval = chans.get(f"aroma::{char}", 0.0) + chans.get(f"taste::{char}", 0.0)
+            if tval <= 0:
+                continue
+            _on, _off, net = _option_net(chans, desired_set)
+            if net <= 0:
+                continue  # шумна — додасть більше стороннього, ніж корисного
+            if _overpowers(chans, desired_set):
+                continue  # її стороння нота перебила б користь — не беремо
+            key = (round(tval, 3), round(net, 3))
+            if best_key is None or key > best_key:
+                best_key = key
+                best = (mid, part, form, pit, tval)
+    return best
+
+
 def _find_harmony(
     db: Session, desired_set: Set[str], exclude_ids: Set[int]
 ) -> Optional[Tuple[int, str, str, str, bool]]:
@@ -559,6 +668,8 @@ def _find_harmony(
             # і майже не шуміти; інакше краще менше інгредієнтів, ніж сторонні ноти
             if on <= 0 or net <= 0:
                 continue
+            if _overpowers(chans, desired_set):
+                continue  # перебиває профіль — не додаємо заради кількості
             if best is None or net > best[5]:
                 best = (mid, part, form, pit, True, net)
     if best is None:
@@ -607,16 +718,24 @@ def _finalize(
     def _aromatic_count() -> int:
         return sum(1 for s in selections if s.material_id > 0)
 
+    # Ноти, які наявна сировина не здатна суттєво підсилити — більше не пробуємо
+    # (щоб не додавати купу інгредієнтів, що нібито «підсилюють», але дають ~0).
+    exhausted: Set[str] = set()
+
     def _weakest_desired() -> Optional[str]:
         prof = _build_profile(db, selections)
-        weak = [(c, prof.total(c)) for c in desired_set]
+        weak = [(c, prof.total(c)) for c in desired_set if c not in exhausted]
         weak = [(c, v) for c, v in weak if v < TARGET_STRENGTH]
         if not weak:
             return None
         return min(weak, key=lambda cv: cv[1])[0]
 
+    # Конфлікти з основою розширюють «шум»: інгредієнти, що підсилюють
+    # конфліктні ноти, отримують нижчий net і не обираються.
+    effective_desired = desired_set - base_conflict_chars
+
     guard = 0
-    while guard < max_ingredients + MIN_INGREDIENTS:
+    while guard < max_ingredients + 2 * MIN_INGREDIENTS:
         guard += 1
         count = _aromatic_count()
         if count >= max_ingredients:
@@ -627,17 +746,21 @@ def _finalize(
             break  # достатньо складових і профіль уже виразний
 
         mid = part = form = pit = None
+        reinforced_char: Optional[str] = None
         block = used | honey_block
-        # Конфлікти з основою розширюють «шум» при оцінці кандидатів: інгредієнти,
-        # що підсилюють конфліктні ноти, отримують нижчий net і не обираються.
-        effective_desired = desired_set - base_conflict_chars
-        # 1а) прицільно підсилюємо найслабшу бажану ноту чистою сировиною
+        # 1а) прицільно підсилюємо найслабшу бажану ноту — лише якщо знайдена
+        #     сировина РЕАЛЬНО дає достатньо саме цієї ноти (а не мізер).
         if target_char is not None:
-            for c in _find_candidates(db, {target_char}, block, effective_desired):
-                if c[4] > 0:  # net > 0 — підсилює, майже не шумить
-                    mid, part, form, pit = c[0], c[1], c[2], c[3]
-                    break
-        # 1б) інакше (для добору мінімуму) — будь-який чистий гармонійний інгредієнт
+            cand = _best_for_char(db, target_char, block, effective_desired)
+            if cand is not None and cand[4] >= MIN_REINFORCE:
+                mid, part, form, pit = cand[0], cand[1], cand[2], cand[3]
+                reinforced_char = target_char
+            else:
+                # цю ноту годі підсилити наявною сировиною — позначаємо й далі
+                exhausted.add(target_char)
+                if not need_min:
+                    continue  # мінімум набрано — не додаємо «порожній» інгредієнт
+        # 1б) для добору мінімуму — будь-який чистий гармонійний інгредієнт
         if mid is None:
             harm = _find_harmony(db, effective_desired, block)
             if harm is None:
@@ -651,9 +774,9 @@ def _finalize(
             )
         )
         used.add(mid)
-        if target_char is not None:
+        if reinforced_char is not None:
             notes.append(
-                f"{_resolve_name(db, mid)}: підсилює «{target_char}» у профілі"
+                f"{_resolve_name(db, mid)}: підсилює «{reinforced_char}» у профілі"
             )
         else:
             notes.append(
@@ -671,6 +794,9 @@ def _finalize(
                     continue
                 if _option_layer(db, c[0], c[1], c[2], c[3]) != VOL_BASE:
                     continue
+                cand_chans = _option_breakdown(db, c[0]).get((c[1], c[2], c[3]), {})
+                if _overpowers(cand_chans, effective_desired):
+                    continue  # перебиває профіль
                 mid, part, form, pit = c[0], c[1], c[2], c[3]
                 selections.append(
                     ResolvedSelection(

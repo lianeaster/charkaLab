@@ -71,6 +71,12 @@ class CharacteristicScore(BaseModel):
     covered: bool
 
 
+class PyramidLayer(BaseModel):
+    layer: str  # top | heart | base
+    title: str
+    notes: List[CharacteristicScore] = Field(default_factory=list)
+
+
 class RecipeVariant(BaseModel):
     title: str
     match_score: float
@@ -83,6 +89,7 @@ class RecipeVariant(BaseModel):
     compounds: List[CompoundContribution]
     balance_notes: List[str] = Field(default_factory=list)
     explanation: str
+    pyramid: List[PyramidLayer] = Field(default_factory=list)
 
 
 class ProfileFeasibility(BaseModel):

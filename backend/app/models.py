@@ -48,6 +48,14 @@ KIND_TASTE = "taste"
 KIND_BOTH = "both"
 KINDS = (KIND_AROMA, KIND_TASTE, KIND_BOTH)
 
+# volatility tiers (ольфакторна піраміда): top — леткі верхні ноти (яскравий
+# старт, швидко зникають), heart — тіло напою, base — важкі стійкі ноти, що
+# дають глибокий післясмак і тримають аромат (фіксатори)
+VOL_TOP = "top"
+VOL_HEART = "heart"
+VOL_BASE = "base"
+VOLATILITIES = (VOL_TOP, VOL_HEART, VOL_BASE)
+
 
 class RawMaterial(Base):
     __tablename__ = "raw_materials"
@@ -71,6 +79,8 @@ class AromaCompound(Base):
     name: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     # aroma | taste | both
     kind: Mapped[str] = mapped_column(String(10), default=KIND_BOTH)
+    # top | heart | base — летючість/стійкість ноти в часі
+    volatility: Mapped[str] = mapped_column(String(6), default=VOL_HEART)
 
     materials: Mapped[List["MaterialCompound"]] = relationship(
         back_populates="compound", cascade="all, delete-orphan"

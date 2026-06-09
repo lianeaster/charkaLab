@@ -1,4 +1,4 @@
-import { ROLE_LABELS, variantLabel } from "../api";
+import { PYRAMID_META, ROLE_LABELS, variantLabel } from "../api";
 
 function ProfileBars({ title, items }) {
   if (!items.length) return null;
@@ -58,11 +58,71 @@ function BalanceBadge({ score }) {
   );
 }
 
+const LAYER_STYLE = {
+  top: "border-charka-200 bg-charka-50",
+  heart: "border-wine-300 bg-wine-50",
+  base: "border-stone-300 bg-stone-100",
+};
+
+function Pyramid({ pyramid }) {
+  if (!pyramid || !pyramid.length) return null;
+  const order = ["top", "heart", "base"];
+  const sorted = [...pyramid].sort(
+    (a, b) => order.indexOf(a.layer) - order.indexOf(b.layer)
+  );
+  return (
+    <div className="mb-4 rounded-xl border border-stone-200 bg-cream/40 p-3">
+      <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-stone-400">
+        Піраміда нот (у часі)
+      </h4>
+      <div className="flex flex-col gap-2">
+        {sorted.map((layer) => {
+          const meta = PYRAMID_META[layer.layer] || { label: layer.title, hint: "" };
+          const top = layer.notes.slice(0, 6);
+          return (
+            <div
+              key={layer.layer}
+              className={"rounded-lg border px-3 py-2 " + (LAYER_STYLE[layer.layer] || "")}
+            >
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-sm font-semibold text-stone-700">
+                  {meta.label}
+                </span>
+                <span className="text-[11px] text-stone-400">{meta.hint}</span>
+              </div>
+              {top.length ? (
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  {top.map((n) => (
+                    <span
+                      key={n.name}
+                      className={
+                        "rounded-full px-2 py-0.5 text-xs " +
+                        (n.covered
+                          ? "bg-charka-600 text-white"
+                          : "bg-white/70 text-stone-600")
+                      }
+                    >
+                      {n.name}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-1 text-xs italic text-stone-400">порожньо</p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const ROLE_CHIP = {
   suggested: "border-wine-200 bg-wine-50 text-wine-700",
   balance: "border-charka-200 bg-charka-50 text-charka-700",
   sweetener: "border-charka-200 bg-charka-50 text-charka-700",
   harmony: "border-stone-300 bg-white text-stone-600",
+  base: "border-stone-400 bg-stone-100 text-stone-700",
 };
 
 function VariantCard({ variant, index }) {
@@ -106,6 +166,8 @@ function VariantCard({ variant, index }) {
       </div>
 
       <p className="mb-3 text-sm text-stone-600">{variant.explanation}</p>
+
+      <Pyramid pyramid={variant.pyramid} />
 
       {variant.balance_notes && variant.balance_notes.length > 0 && (
         <div className="mb-4 rounded-lg border border-charka-100 bg-charka-50/60 p-3">

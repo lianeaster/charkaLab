@@ -27,6 +27,9 @@ from ..models import (
     KIND_TASTE,
     MaterialCompound,
     RawMaterial,
+    VOL_BASE,
+    VOL_HEART,
+    VOL_TOP,
 )
 from ..schemas import (
     CharacteristicScore,
@@ -34,6 +37,7 @@ from ..schemas import (
     GenerateRequest,
     GenerateResponse,
     MaterialInComposition,
+    PyramidLayer,
     ProfileFeasibility,
     RecipeVariant,
 )
@@ -87,6 +91,13 @@ DOSE_MAX = 0.85
 # доза ароматичних нот підсолоджувача (мед); сама солодкість дозується окремо
 SWEETENER_AROMA = 0.6
 
+# Стеля дози допоміжного інгредієнта за його ярусом летючості. Верхні (леткі)
+# ноти беремо стримано — це короткий старт, а не тіло напою (саме так гамуємо
+# «цитрус перебиває»); серединні — щедріше; базові — помірно, бо вони стійкі.
+LAYER_DOSE_CAP = {VOL_TOP: 0.4, VOL_HEART: 0.85, VOL_BASE: 0.55}
+# Поріг, нижче якого база вважається слабкою → додаємо ноту для післясмаку
+BASE_MIN = 0.5
+
 
 @dataclass
 class ResolvedSelection:
@@ -105,9 +116,20 @@ class Profile:
     aroma: Dict[str, float] = field(default_factory=lambda: defaultdict(float))
     taste: Dict[str, float] = field(default_factory=lambda: defaultdict(float))
     compounds: Dict[str, Tuple[str, Set[str]]] = field(default_factory=dict)
+    # ольфакторна піраміда: top|heart|base → {характеристика: інтенсивність}
+    layers: Dict[str, Dict[str, float]] = field(
+        default_factory=lambda: {
+            VOL_TOP: defaultdict(float),
+            VOL_HEART: defaultdict(float),
+            VOL_BASE: defaultdict(float),
+        }
+    )
 
     def total(self, char_name: str) -> float:
         return self.aroma.get(char_name, 0.0) + self.taste.get(char_name, 0.0)
+
+    def layer_total(self, layer: str) -> float:
+        return sum(self.layers.get(layer, {}).values())
 
 
 def _compound_chars(compound: AromaCompound) -> Dict[str, float]:
@@ -125,6 +147,7 @@ def _add_selection_to_profile(
     # Пряма (дозована) солодкість підсолоджувача — цукру чи меду
     if selection.sweet_add > 0:
         profile.taste[SWEET] += selection.sweet_add
+        profile.layers[VOL_HEART][SWEET] += selection.sweet_add
         marker = selection.name or SUGAR_NAME
         if marker not in profile.compounds:
             profile.compounds[marker] = (KIND_TASTE, {SWEET})
@@ -134,6 +157,9 @@ def _add_selection_to_profile(
     if selection.material_id <= 0:
         return
     amount = selection.amount
+    # Серце напою — завжди основна сировина: її ноти кладемо в шар heart
+    # незалежно від хімії. Решта — за летючістю самих сполук.
+    force_heart = selection.role == "main"
     rows = db.scalars(
         select(MaterialCompound).where(
             MaterialCompound.raw_material_id == selection.material_id,
@@ -146,18 +172,24 @@ def _add_selection_to_profile(
         compound = db.get(AromaCompound, mc.compound_id)
         if compound is None:
             continue
+        layer = VOL_HEART if force_heart else (compound.volatility or VOL_HEART)
         char_weights = _compound_chars(compound)
         recorded: Set[str] = set()
         for char_name, weight in char_weights.items():
             contribution = mc.intensity * weight * amount
+            added_to_layer = False
             if compound.kind in (KIND_AROMA, KIND_BOTH):
                 profile.aroma[char_name] += contribution
+                profile.layers[layer][char_name] += contribution
+                added_to_layer = True
                 recorded.add(char_name)
             if compound.kind in (KIND_TASTE, KIND_BOTH):
                 # для підсолоджувача (мед) дозу солодкості вже задано через
                 # sweet_add — власні смакові ноти не додаємо, щоб не дублювати
                 if not is_sweetener:
                     profile.taste[char_name] += contribution
+                    if not added_to_layer:
+                        profile.layers[layer][char_name] += contribution
                     recorded.add(char_name)
         if not recorded:
             continue
@@ -263,6 +295,28 @@ def _option_net(
     return on, off, on - OFF_PENALTY * off
 
 
+def _option_layer(db: Session, material_id: int, part: str, form: str, pit: str) -> str:
+    """Домінантний ярус летючості опції (top|heart|base) за сумарним внеском."""
+    rows = db.scalars(
+        select(MaterialCompound).where(
+            MaterialCompound.raw_material_id == material_id,
+            MaterialCompound.part == part,
+            MaterialCompound.form == form,
+            MaterialCompound.pit == pit,
+        )
+    ).all()
+    totals: Dict[str, float] = defaultdict(float)
+    for mc in rows:
+        compound = db.get(AromaCompound, mc.compound_id)
+        if compound is None:
+            continue
+        weight_sum = sum(_compound_chars(compound).values())
+        totals[compound.volatility or VOL_HEART] += mc.intensity * weight_sum
+    if not totals:
+        return VOL_HEART
+    return max(totals.items(), key=lambda kv: kv[1])[0]
+
+
 def _dose(
     db: Session,
     material_id: int,
@@ -271,11 +325,11 @@ def _dose(
     pit: str,
     desired_set: Set[str],
 ) -> float:
-    """Підібрати дозу неосновного інгредієнта за «чистотою» внеску в профіль.
+    """Підібрати дозу неосновного інгредієнта за «чистотою» внеску та ярусом.
 
     Чим вища частка корисного сигналу (бажане проти стороннього), тим більша
-    доза. Шумні інгредієнти (напр. цедра з потужним цитрусом для немедового
-    профілю) стишуються до мінімального акценту.
+    доза. Зверху доза обмежена стелею ярусу: верхні (леткі) ноти беремо
+    стримано, щоб вони не перебивали серце, базові — помірно (вони й так стійкі).
     """
     if material_id <= 0:
         return SWEETENER_AROMA
@@ -284,7 +338,10 @@ def _dose(
     if on + off <= 0:
         return DOSE_MIN
     cleanliness = on / (on + off)
-    return round(DOSE_MIN + (DOSE_MAX - DOSE_MIN) * cleanliness, 2)
+    dose = DOSE_MIN + (DOSE_MAX - DOSE_MIN) * cleanliness
+    layer = _option_layer(db, material_id, part, form, pit)
+    cap = LAYER_DOSE_CAP.get(layer, DOSE_MAX)
+    return round(min(dose, cap), 2)
 
 
 def _find_candidates(
@@ -434,9 +491,19 @@ def _find_harmony(
 
 
 def _finalize(
-    db: Session, selections: List[ResolvedSelection], desired_set: Set[str]
+    db: Session,
+    selections: List[ResolvedSelection],
+    desired_set: Set[str],
+    *,
+    max_ingredients: int = MAX_INGREDIENTS,
+    sweetener: str = "auto",  # auto | honey | sugar
 ) -> Tuple[List[ResolvedSelection], List[str]]:
-    """Дозування інгредієнтів + балансування смаку + мінімум інгредієнтів."""
+    """Дозування інгредієнтів + балансування смаку + мінімум інгредієнтів.
+
+    max_ingredients — стеля ароматичних складових (для «лаконічної» композиції
+    можна задати MIN_INGREDIENTS). sweetener — чим підсолоджувати: автоматично,
+    примусово медом чи цукром (для варіанта з альтернативним підсолоджувачем).
+    """
     notes: List[str] = []
     used: Set[int] = {s.material_id for s in selections}
     # Мед не підказуємо як звичайну сировину — лише як підсолоджувач, щоб уникнути
@@ -451,6 +518,92 @@ def _finalize(
         else:
             s.amount = _dose(db, s.material_id, s.part, s.form, s.pit, desired_set)
 
+    # Порядок важливий: спершу формуємо повний АРОМАТИЧНИЙ скелет (підсилення
+    # профілю, мінімум інгредієнтів, базова нота), і лише ПОТІМ балансуємо смак.
+    # Інакше гострі ноти доданих на підсиленні інгредієнтів лишаться без
+    # солодкого протиставлення.
+
+    # 1) Підсилення профілю: додаємо ще чисті складові, поки якась бажана нота
+    #    слабка (або поки не набрали мінімум інгредієнтів), у межах стелі.
+    def _aromatic_count() -> int:
+        return sum(1 for s in selections if s.material_id > 0)
+
+    def _weakest_desired() -> Optional[str]:
+        prof = _build_profile(db, selections)
+        weak = [(c, prof.total(c)) for c in desired_set]
+        weak = [(c, v) for c, v in weak if v < TARGET_STRENGTH]
+        if not weak:
+            return None
+        return min(weak, key=lambda cv: cv[1])[0]
+
+    guard = 0
+    while guard < max_ingredients + MIN_INGREDIENTS:
+        guard += 1
+        count = _aromatic_count()
+        if count >= max_ingredients:
+            break
+        target_char = _weakest_desired()
+        need_min = count < MIN_INGREDIENTS
+        if target_char is None and not need_min:
+            break  # достатньо складових і профіль уже виразний
+
+        mid = part = form = pit = None
+        block = used | honey_block
+        # 1а) прицільно підсилюємо найслабшу бажану ноту чистою сировиною
+        if target_char is not None:
+            for c in _find_candidates(db, {target_char}, block, desired_set):
+                if c[4] > 0:  # net > 0 — підсилює, майже не шумить
+                    mid, part, form, pit = c[0], c[1], c[2], c[3]
+                    break
+        # 1б) інакше (для добору мінімуму) — будь-який чистий гармонійний інгредієнт
+        if mid is None:
+            harm = _find_harmony(db, desired_set, block)
+            if harm is None:
+                break
+            mid, part, form, pit, _reinf = harm
+
+        selections.append(
+            ResolvedSelection(
+                mid, _resolve_name(db, mid), part, form, pit, "harmony",
+                amount=_dose(db, mid, part, form, pit, desired_set),
+            )
+        )
+        used.add(mid)
+        if target_char is not None:
+            notes.append(
+                f"{_resolve_name(db, mid)}: підсилює «{target_char}» у профілі"
+            )
+        else:
+            notes.append(
+                f"{_resolve_name(db, mid)}: додає складності для гармонії"
+            )
+
+    # 2) Глибокий післясмак: якщо база (стійкі ноти) слабка, додаємо одну чисту
+    #    базову ноту, що підсилює бажаний профіль — вона тримається у фініші.
+    if _aromatic_count() < max_ingredients:
+        prof = _build_profile(db, selections)
+        if prof.layer_total(VOL_BASE) < BASE_MIN:
+            block = used | honey_block
+            for c in _find_candidates(db, desired_set, block, desired_set):
+                if c[4] <= 0:  # шумна — пропускаємо
+                    continue
+                if _option_layer(db, c[0], c[1], c[2], c[3]) != VOL_BASE:
+                    continue
+                mid, part, form, pit = c[0], c[1], c[2], c[3]
+                selections.append(
+                    ResolvedSelection(
+                        mid, _resolve_name(db, mid), part, form, pit, "base",
+                        amount=_dose(db, mid, part, form, pit, desired_set),
+                    )
+                )
+                used.add(mid)
+                notes.append(
+                    f"{_resolve_name(db, mid)}: базова нота для глибокого післясмаку"
+                )
+                break
+
+    # 3) Баланс смаку — ОСТАННІМ кроком, коли всі ароматичні складові вже зібрані,
+    #    щоб гострі ноти доданих інгредієнтів теж потрапили під пом'якшення.
     profile = _build_profile(db, selections)
     sweet = profile.taste.get(SWEET, 0.0)
     sour = profile.taste.get(SOUR, 0.0)
@@ -461,7 +614,6 @@ def _finalize(
     harsh_off = {a: v for a, v in harsh_vals.items() if a not in desired_set and v > 0}
     harsh_off_total = sum(harsh_off.values())
 
-    # Скільки солодкості (цукру) треба додати для балансу.
     needed_sweet = 0.0
     reasons: List[str] = []
 
@@ -484,15 +636,23 @@ def _finalize(
         needed_sweet = max(needed_sweet, sour * 0.6)
         reasons.append("згладити надмірну кислотність")
 
-    # 1) Додаємо підсолоджувач (мед або цукор), якщо потрібно
+    # Бажана солодкість: якщо «солодкий» прямо в профілі, але слабкий — доводимо
+    # підсолоджувачем до цільової виразності (інакше нота лишається непокритою).
+    if SWEET in desired_set and sweet < TARGET_STRENGTH:
+        needed_sweet = max(needed_sweet, TARGET_STRENGTH)
+        reasons.append("посилити бажану солодкість")
+
+    # 3а) Додаємо підсолоджувач (мед або цукор), якщо потрібно
     dose = round(needed_sweet - sweet, 2)
     if dose > 0:
-        # мед — лише якщо профіль «медовий/квітковий» і мед ще не в композиції
-        use_honey = (
-            honey_id is not None
-            and bool(desired_set & HONEY_AFFINITY)
-            and honey_id not in used
-        )
+        honey_free = honey_id is not None and honey_id not in used
+        if sweetener == "honey":
+            use_honey = honey_free
+        elif sweetener == "sugar":
+            use_honey = False
+        else:
+            # авто: мед, якщо профіль «медовий/квітковий» і мед ще не в композиції
+            use_honey = honey_free and bool(desired_set & HONEY_AFFINITY)
         if use_honey:
             # мед: солодкість + доречні медові/квіткові ноти
             selections.append(
@@ -530,7 +690,7 @@ def _finalize(
             )
         sweet += dose
 
-    # 2) Нудотно-солодко й «пласко» → додати кислинку для свіжості
+    # 3б) Нудотно-солодко й «пласко» → додати кислинку для свіжості
     if (
         sweet >= 1.2
         and sour < 0.2
@@ -551,61 +711,6 @@ def _finalize(
                 f"{_resolve_name(db, mid)}: свіжа кислинка проти надмірної солодкості"
             )
 
-    # 3) Підсилення профілю: додаємо ще чисті складові, поки якась бажана нота
-    #    слабка (або поки не набрали мінімум інгредієнтів), у межах стелі.
-    def _aromatic_count() -> int:
-        return sum(1 for s in selections if s.material_id > 0)
-
-    def _weakest_desired() -> Optional[str]:
-        prof = _build_profile(db, selections)
-        weak = [(c, prof.total(c)) for c in desired_set]
-        weak = [(c, v) for c, v in weak if v < TARGET_STRENGTH]
-        if not weak:
-            return None
-        return min(weak, key=lambda cv: cv[1])[0]
-
-    guard = 0
-    while guard < MAX_INGREDIENTS + MIN_INGREDIENTS:
-        guard += 1
-        count = _aromatic_count()
-        if count >= MAX_INGREDIENTS:
-            break
-        target_char = _weakest_desired()
-        need_min = count < MIN_INGREDIENTS
-        if target_char is None and not need_min:
-            break  # достатньо складових і профіль уже виразний
-
-        mid = part = form = pit = None
-        block = used | honey_block
-        # 3а) прицільно підсилюємо найслабшу бажану ноту чистою сировиною
-        if target_char is not None:
-            for c in _find_candidates(db, {target_char}, block, desired_set):
-                if c[4] > 0:  # net > 0 — підсилює, майже не шумить
-                    mid, part, form, pit = c[0], c[1], c[2], c[3]
-                    break
-        # 3б) інакше (для добору мінімуму) — будь-який чистий гармонійний інгредієнт
-        if mid is None:
-            harm = _find_harmony(db, desired_set, block)
-            if harm is None:
-                break
-            mid, part, form, pit, _reinf = harm
-
-        selections.append(
-            ResolvedSelection(
-                mid, _resolve_name(db, mid), part, form, pit, "harmony",
-                amount=_dose(db, mid, part, form, pit, desired_set),
-            )
-        )
-        used.add(mid)
-        if target_char is not None:
-            notes.append(
-                f"{_resolve_name(db, mid)}: підсилює «{target_char}» у профілі"
-            )
-        else:
-            notes.append(
-                f"{_resolve_name(db, mid)}: додає складності для гармонії"
-            )
-
     return selections, notes
 
 
@@ -619,6 +724,37 @@ def _profile_scores(
                 name=name,
                 score=round(value, 3),
                 covered=name in desired,
+            )
+        )
+    return out
+
+
+def _build_pyramid(profile: Profile, desired_set: Set[str]) -> List[PyramidLayer]:
+    """Ольфакторна піраміда напою: верхні / серце / база.
+
+    Серце — ядро характеру (основна сировина). Верх — короткий яскравий старт,
+    база — глибокий стійкий післясмак.
+    """
+    titles = {
+        VOL_TOP: "Верхні ноти (старт)",
+        VOL_HEART: "Серце (основна сировина)",
+        VOL_BASE: "База (післясмак)",
+    }
+    out: List[PyramidLayer] = []
+    for layer in (VOL_TOP, VOL_HEART, VOL_BASE):
+        chars = profile.layers.get(layer, {})
+        notes = [
+            CharacteristicScore(
+                name=name, score=round(value, 3), covered=name in desired_set
+            )
+            for name, value in sorted(
+                chars.items(), key=lambda kv: kv[1], reverse=True
+            )
+            if value > 0
+        ]
+        out.append(
+            PyramidLayer(
+                layer=layer, title=titles[layer], notes=notes
             )
         )
     return out
@@ -656,6 +792,8 @@ def _make_variant(
     ]
     suggested = [s.name for s in selections if s.role == "suggested"]
 
+    pyramid = _build_pyramid(profile, desired_set)
+
     parts = [
         f"Покрито {len(covered)}/{len(desired_names)} бажаних характеристик."
     ]
@@ -681,6 +819,7 @@ def _make_variant(
         compounds=compounds,
         balance_notes=balance_notes,
         explanation=explanation,
+        pyramid=pyramid,
     )
 
 
@@ -818,10 +957,7 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
         else []
     )
 
-    # Набори-заготовки композицій (до балансування)
-    seeds: List[Tuple[str, List[ResolvedSelection]]] = []
-
-    # 1) Основна: обрана сировина + жадібне закриття прогалин профілю
+    # Жадібна заготовка: обрана сировина + закриття прогалин профілю кандидатами.
     greedy = list(chosen)
     still_missing = set(base_missing)
     used: Set[int] = set(exclude_ids)
@@ -835,23 +971,43 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
         still_missing -= covered
         if not still_missing or len(used) - len(exclude_ids) >= MAX_SUGGESTED:
             break
-    seeds.append(("Збалансована композиція під профіль", greedy))
 
-    # 2) Лише обрана сировина (збалансована)
-    seeds.append(("Збалансована композиція з обраної сировини", list(chosen)))
-
-    # 3) Альтернативи: обрана + один кандидат
-    for mid, part, form, pit, _val, _covered in candidates[:MAX_VARIANTS]:
-        single = list(chosen)
-        single.append(
-            ResolvedSelection(mid, _resolve_name(db, mid), part, form, pit, "suggested")
-        )
-        seeds.append((f"Альтернатива: + {_resolve_name(db, mid)}", single))
-
+    # Три ГЕНЕТИЧНО різні стратегії композиції замість збіжних «альтернатив»:
     variants: List[RecipeVariant] = []
-    for title, sel in seeds:
-        finalized, notes = _finalize(db, list(sel), desired_set)
-        variants.append(_make_variant(db, title, finalized, desired_names, notes))
+
+    # A) Повна композиція під профіль — багата, до MAX_INGREDIENTS, авто-баланс.
+    full_sel, full_notes = _finalize(
+        db, list(greedy), desired_set, max_ingredients=MAX_INGREDIENTS, sweetener="auto"
+    )
+    variants.append(
+        _make_variant(db, "Повна композиція під профіль", full_sel, desired_names, full_notes)
+    )
+
+    # Який підсолоджувач узяла повна композиція — для альтернативи беремо інший.
+    full_sweet = next((s.name for s in full_sel if s.role == "sweetener"), None)
+
+    # B) Лаконічна композиція — лише обрана сировина + мінімум для покриття/балансу.
+    lean_sel, lean_notes = _finalize(
+        db, list(chosen), desired_set, max_ingredients=MIN_INGREDIENTS, sweetener="auto"
+    )
+    variants.append(
+        _make_variant(
+            db, "Лаконічна композиція (мінімум складових)", lean_sel, desired_names, lean_notes
+        )
+    )
+
+    # C) З альтернативним підсолоджувачем — та сама база, але мед↔цукор.
+    if full_sweet is not None:
+        alt = "sugar" if full_sweet == HONEY_NAME else "honey"
+        alt_label = SUGAR_NAME if alt == "sugar" else HONEY_NAME
+        alt_sel, alt_notes = _finalize(
+            db, list(greedy), desired_set, max_ingredients=MAX_INGREDIENTS, sweetener=alt
+        )
+        variants.append(
+            _make_variant(
+                db, f"Варіант із підсолоджувачем: {alt_label}", alt_sel, desired_names, alt_notes
+            )
+        )
 
     # дедуплікація за набором матеріалів + сортування за загальною оцінкою
     seen: Set[Tuple] = set()

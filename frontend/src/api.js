@@ -79,4 +79,11 @@ export const ROLE_LABELS = {
   balance: "для балансу",
   harmony: "для гармонії",
   sweetener: "для солодкості",
+  base: "для післясмаку",
+};
+
+export const PYRAMID_META = {
+  top: { label: "Верхні ноти", hint: "яскравий старт, швидко зникають" },
+  heart: { label: "Серце", hint: "ядро напою — основна сировина" },
+  base: { label: "База", hint: "глибокий стійкий післясмак" },
 };

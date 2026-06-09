@@ -1004,9 +1004,18 @@ def _distillate_contribution(
             MaterialCompound.raw_material_id == main_sel.material_id,
             MaterialCompound.part == main_sel.part,
             MaterialCompound.form == main_sel.form,
+            MaterialCompound.pit == main_sel.pit,
         )
     ).all()
-    if not rows:  # fallback: будь-яка part/form тієї ж сировини
+    if not rows:  # fallback: та сама part/form (будь-яка кісточка)
+        rows = db.scalars(
+            select(MaterialCompound).where(
+                MaterialCompound.raw_material_id == main_sel.material_id,
+                MaterialCompound.part == main_sel.part,
+                MaterialCompound.form == main_sel.form,
+            )
+        ).all()
+    if not rows:  # останній fallback: будь-який варіант сировини
         rows = db.scalars(
             select(MaterialCompound).where(
                 MaterialCompound.raw_material_id == main_sel.material_id

@@ -35,6 +35,129 @@ function ProfileBars({ title, items }) {
   );
 }
 
+// Цільовий рівень бажаної ноти (узгоджено з TARGET_STRENGTH на бекенді)
+const RADAR_TARGET = 0.8;
+const RADAR_MAX_AXES = 11;
+
+// Сумарний внесок кожної характеристики (аромат + смак) для варіанта
+function mergedTotals(variant) {
+  const totals = {};
+  for (const p of [...variant.aroma_profile, ...variant.taste_profile]) {
+    totals[p.name] = (totals[p.name] || 0) + p.score;
+  }
+  return totals;
+}
+
+// Спільний максимум по всіх варіантах, щоб радари мали однаковий масштаб
+// (інакше пунктир «бажаного» плаває й варіанти стають непорівнянними).
+function radarScaleMax(variants) {
+  let m = RADAR_TARGET;
+  for (const v of variants) {
+    const t = mergedTotals(v);
+    for (const k in t) m = Math.max(m, t[k]);
+  }
+  return m || 1;
+}
+
+function ProfileRadar({ variant, desired, scaleMax }) {
+  const desiredList = desired || [];
+  const totals = mergedTotals(variant);
+  // Осі: бажані ноти + найсильніші присутні (щоб не було каші з 50 осей)
+  const others = Object.keys(totals)
+    .filter((n) => !desiredList.includes(n))
+    .sort((a, b) => totals[b] - totals[a]);
+  const slots = Math.max(0, RADAR_MAX_AXES - desiredList.length);
+  const axes = [...desiredList, ...others.slice(0, slots)];
+  if (axes.length < 3) return null; // радар має сенс від 3 осей
+
+  const maxVal = scaleMax || Math.max(RADAR_TARGET, ...axes.map((a) => totals[a] || 0)) || 1;
+  const size = 280;
+  const cx = size / 2;
+  const cy = size / 2;
+  const R = 88;
+  const n = axes.length;
+  const angle = (i) => -Math.PI / 2 + (i * 2 * Math.PI) / n;
+  const pt = (i, val) => {
+    const r = R * Math.min(val / maxVal, 1.04);
+    return [cx + r * Math.cos(angle(i)), cy + r * Math.sin(angle(i))];
+  };
+  const toPath = (pts) =>
+    pts.map(([x, y], i) => (i ? "L" : "M") + x.toFixed(1) + " " + y.toFixed(1)).join(" ") + " Z";
+
+  const achieved = axes.map((a, i) => pt(i, totals[a] || 0));
+  const target = axes.map((a, i) => pt(i, desiredList.includes(a) ? RADAR_TARGET : 0));
+  const rings = [0.25, 0.5, 0.75, 1];
+
+  return (
+    <div>
+      <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-stone-400">
+        Профіль: бажаний vs досягнутий
+      </h4>
+      <svg viewBox={`0 0 ${size} ${size}`} className="mx-auto w-full max-w-[300px]">
+        {/* кільця-сітка */}
+        {rings.map((f) => (
+          <polygon
+            key={f}
+            points={axes
+              .map((_, i) => {
+                const [x, y] = pt(i, maxVal * f);
+                return `${x.toFixed(1)},${y.toFixed(1)}`;
+              })
+              .join(" ")}
+            fill="none"
+            stroke="#e7e5e4"
+            strokeWidth="1"
+          />
+        ))}
+        {/* спиці + підписи */}
+        {axes.map((a, i) => {
+          const [ex, ey] = pt(i, maxVal);
+          const [lx, ly] = (() => {
+            const r = R + 14;
+            return [cx + r * Math.cos(angle(i)), cy + r * Math.sin(angle(i))];
+          })();
+          const cos = Math.cos(angle(i));
+          const anchor = cos > 0.3 ? "start" : cos < -0.3 ? "end" : "middle";
+          const isDesired = desiredList.includes(a);
+          return (
+            <g key={a}>
+              <line x1={cx} y1={cy} x2={ex} y2={ey} stroke="#e7e5e4" strokeWidth="1" />
+              <text
+                x={lx}
+                y={ly}
+                fontSize="9"
+                textAnchor={anchor}
+                dominantBaseline="middle"
+                fill={isDesired ? "#b45309" : "#a8a29e"}
+                fontWeight={isDesired ? 600 : 400}
+              >
+                {a}
+              </text>
+            </g>
+          );
+        })}
+        {/* бажаний (ціль) — пунктир */}
+        <path d={toPath(target)} fill="none" stroke="#78716c" strokeWidth="1.5" strokeDasharray="4 3" />
+        {/* досягнутий — заливка */}
+        <path d={toPath(achieved)} fill="rgba(217,119,6,0.18)" stroke="#d97706" strokeWidth="2" />
+        {achieved.map(([x, y], i) => (
+          <circle key={i} cx={x} cy={y} r="2.5" fill="#d97706" />
+        ))}
+      </svg>
+      <div className="mt-1 flex justify-center gap-4 text-xs text-stone-500">
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-2 w-3 rounded-sm bg-charka-500/40 ring-1 ring-charka-600" />
+          досягнутий
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block h-0 w-3 border-t-2 border-dashed border-stone-500" />
+          бажаний
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function ScoreBadge({ score }) {
   const pct = Math.round(score * 100);
   const color =
@@ -125,7 +248,7 @@ const ROLE_CHIP = {
   base: "border-stone-400 bg-stone-100 text-stone-700",
 };
 
-function VariantCard({ variant, index }) {
+function VariantCard({ variant, index, desired, radarMax }) {
   return (
     <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
       <div className="mb-3 flex items-start justify-between gap-3">
@@ -182,9 +305,12 @@ function VariantCard({ variant, index }) {
         </div>
       )}
 
-      <div className="mb-4 grid gap-4 sm:grid-cols-2">
-        <ProfileBars title="Аромат" items={variant.aroma_profile} />
-        <ProfileBars title="Смак" items={variant.taste_profile} />
+      <div className="mb-4 grid gap-4 lg:grid-cols-2">
+        <ProfileRadar variant={variant} desired={desired} scaleMax={radarMax} />
+        <div className="flex flex-col gap-4">
+          <ProfileBars title="Аромат" items={variant.aroma_profile} />
+          <ProfileBars title="Смак" items={variant.taste_profile} />
+        </div>
       </div>
 
       <details className="text-sm">
@@ -265,6 +391,7 @@ function FeasibilityBanner({ feasibility }) {
 
 export default function RecipeResults({ result }) {
   if (!result) return null;
+  const radarMax = radarScaleMax(result.variants);
   return (
     <div className="flex flex-col gap-4">
       <div className="text-sm text-stone-500">
@@ -278,7 +405,13 @@ export default function RecipeResults({ result }) {
       <BaseInfluenceBanner influence={result.base_influence} />
       <FeasibilityBanner feasibility={result.feasibility} />
       {result.variants.map((v, i) => (
-        <VariantCard key={i} variant={v} index={i} />
+        <VariantCard
+          key={i}
+          variant={v}
+          index={i}
+          desired={result.desired}
+          radarMax={radarMax}
+        />
       ))}
     </div>
   );

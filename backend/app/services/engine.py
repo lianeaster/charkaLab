@@ -34,12 +34,19 @@ from ..schemas import (
     GenerateRequest,
     GenerateResponse,
     MaterialInComposition,
+    ProfileFeasibility,
     RecipeVariant,
 )
 
 MAX_VARIANTS = 4
 MAX_SUGGESTED = 3
 MIN_INGREDIENTS = 4
+# Стеля кількості ароматичних складових (без підсолоджувача): дозволяє додавати
+# більше інгредієнтів, щоб краще «вписатися» в профіль.
+MAX_INGREDIENTS = 7
+# Цільова виразність кожної бажаної характеристики; поки нота слабша — додаємо
+# ще чистих підсилювачів.
+TARGET_STRENGTH = 0.8
 MAX_BALANCE_STEPS = 3
 
 # Базові смакові осі балансу
@@ -55,8 +62,30 @@ BALANCE_TOL = 0.5
 
 
 SUGAR_NAME = "цукор"
+HONEY_NAME = "мед"
+# профіль, за якого солодкість краще давати медом (він додає ці ноти доречно)
+HONEY_AFFINITY = {"медовий", "квітковий"}
 # скільки солодкості додати «понад» рівень гострих смаків, щоб напій не був різким
 SUGAR_HEADROOM = 0.1
+
+# ваги підсумкової оцінки відповідності профілю
+W_COVERAGE = 0.45  # скільки бажаних характеристик присутні
+W_STRENGTH = 0.20  # наскільки вони виражені
+W_PRECISION = 0.35  # яка частка сигналу припадає саме на бажане (а не на «шум»)
+
+# Штраф за «шум» (характеристики поза бажаним профілем) під час відбору сировини.
+# Чим вищий — тим неохочіше алгоритм бере інгредієнти, що тягнуть сторонні ноти.
+OFF_PENALTY = 0.8
+
+# Дозування інгредієнтів. Основна сировина йде в повному обсязі (MAIN_AMOUNT),
+# а дозу решти алгоритм підбирає сам у межах [DOSE_MIN, DOSE_MAX] залежно від
+# «чистоти» внеску: що влучніше інгредієнт б'є в бажаний профіль і що менше
+# шумить, то більша його частка. Шумні інгредієнти стишуються до акценту.
+MAIN_AMOUNT = 1.0
+DOSE_MIN = 0.15
+DOSE_MAX = 0.85
+# доза ароматичних нот підсолоджувача (мед); сама солодкість дозується окремо
+SWEETENER_AROMA = 0.6
 
 
 @dataclass
@@ -68,6 +97,7 @@ class ResolvedSelection:
     pit: str
     role: str  # main | additional | suggested | balance | harmony | sweetener
     sweet_add: float = 0.0  # пряма солодкість (цукор), без аромату
+    amount: float = 1.0  # частка (доза) інгредієнта; основна сировина = 1.0
 
 
 @dataclass
@@ -91,14 +121,19 @@ def _compound_chars(compound: AromaCompound) -> Dict[str, float]:
 def _add_selection_to_profile(
     db: Session, selection: ResolvedSelection, profile: Profile
 ) -> None:
-    # Цукор — чиста солодкість, без сировинного аромату
-    if selection.role == "sweetener" or selection.sweet_add > 0:
+    is_sweetener = selection.role == "sweetener" or selection.sweet_add > 0
+    # Пряма (дозована) солодкість підсолоджувача — цукру чи меду
+    if selection.sweet_add > 0:
         profile.taste[SWEET] += selection.sweet_add
-        if SUGAR_NAME not in profile.compounds:
-            profile.compounds[SUGAR_NAME] = (KIND_TASTE, {SWEET})
+        marker = selection.name or SUGAR_NAME
+        if marker not in profile.compounds:
+            profile.compounds[marker] = (KIND_TASTE, {SWEET})
         else:
-            profile.compounds[SUGAR_NAME][1].add(SWEET)
+            profile.compounds[marker][1].add(SWEET)
+    # Чистий цукор не має сировини/аромату
+    if selection.material_id <= 0:
         return
+    amount = selection.amount
     rows = db.scalars(
         select(MaterialCompound).where(
             MaterialCompound.raw_material_id == selection.material_id,
@@ -112,17 +147,24 @@ def _add_selection_to_profile(
         if compound is None:
             continue
         char_weights = _compound_chars(compound)
-        char_names: Set[str] = set(char_weights.keys())
+        recorded: Set[str] = set()
         for char_name, weight in char_weights.items():
-            contribution = mc.intensity * weight
+            contribution = mc.intensity * weight * amount
             if compound.kind in (KIND_AROMA, KIND_BOTH):
                 profile.aroma[char_name] += contribution
+                recorded.add(char_name)
             if compound.kind in (KIND_TASTE, KIND_BOTH):
-                profile.taste[char_name] += contribution
+                # для підсолоджувача (мед) дозу солодкості вже задано через
+                # sweet_add — власні смакові ноти не додаємо, щоб не дублювати
+                if not is_sweetener:
+                    profile.taste[char_name] += contribution
+                    recorded.add(char_name)
+        if not recorded:
+            continue
         if compound.name not in profile.compounds:
-            profile.compounds[compound.name] = (compound.kind, char_names)
+            profile.compounds[compound.name] = (compound.kind, recorded)
         else:
-            profile.compounds[compound.name][1].update(char_names)
+            profile.compounds[compound.name][1].update(recorded)
 
 
 def _build_profile(db: Session, selections: List[ResolvedSelection]) -> Profile:
@@ -133,15 +175,40 @@ def _build_profile(db: Session, selections: List[ResolvedSelection]) -> Profile:
 
 
 def _score(profile: Profile, desired_names: List[str]) -> float:
-    """Оцінка відповідності бажаному ароматичному профілю."""
+    """Оцінка відповідності бажаному профілю: покриття + сила + точність.
+
+    Точність (precision) — яка частка всього ароматично-смакового сигналу
+    припадає саме на бажані характеристики. Це штрафує композиції, де
+    «вилазять» сторонні профілі (напр. цитрус/пекучість), навіть якщо
+    бажані ноти формально присутні.
+    """
     if not desired_names:
         return 0.0
+    desired_set = set(desired_names)
     scores = [profile.total(name) for name in desired_names]
     covered = sum(1 for s in scores if s > 0)
     coverage_ratio = covered / len(desired_names)
     capped = [min(s, 1.0) for s in scores]
     strength = sum(capped) / len(capped)
-    return round(0.65 * coverage_ratio + 0.35 * strength, 3)
+
+    on_signal = sum(scores)
+    off_signal = 0.0
+    for name, value in profile.aroma.items():
+        if name not in desired_set:
+            off_signal += value
+    for name, value in profile.taste.items():
+        # солодкість зазвичай додаємо навмисно (баланс) — не вважаємо «шумом»
+        if name not in desired_set and name != SWEET:
+            off_signal += value
+    total_signal = on_signal + off_signal
+    precision = on_signal / total_signal if total_signal > 0 else 0.0
+
+    score = (
+        W_COVERAGE * coverage_ratio
+        + W_STRENGTH * strength
+        + W_PRECISION * precision
+    )
+    return round(score, 3)
 
 
 def _balance_score(profile: Profile) -> float:
@@ -173,35 +240,61 @@ def _resolve_name(db: Session, material_id: int) -> str:
     return mat.name if mat else f"#{material_id}"
 
 
-def _best_option_for_chars(
-    db: Session, material_id: int, target_chars: Set[str]
-) -> Optional[Tuple[str, str, str, float]]:
-    """Знайти (part, form, pit), що максимально покриває потрібні характеристики."""
-    rows = db.scalars(
-        select(MaterialCompound).where(
-            MaterialCompound.raw_material_id == material_id
-        )
-    ).all()
-    by_option: Dict[Tuple[str, str, str], float] = defaultdict(float)
-    for mc in rows:
-        compound = db.get(AromaCompound, mc.compound_id)
-        if compound is None:
-            continue
-        for char_name, weight in _compound_chars(compound).items():
-            if char_name in target_chars:
-                by_option[(mc.part, mc.form, mc.pit)] += mc.intensity * weight
-    if not by_option:
-        return None
-    (part, form, pit), val = max(by_option.items(), key=lambda kv: kv[1])
-    return part, form, pit, val
+def _honey_id(db: Session) -> Optional[int]:
+    return db.scalar(select(RawMaterial.id).where(RawMaterial.name == HONEY_NAME))
+
+
+def _option_net(
+    chans: Dict[str, float], desired_set: Set[str]
+) -> Tuple[float, float, float]:
+    """Для опції рахуємо корисний сигнал (бажане), «шум» (стороннє) і net.
+
+    net = on - OFF_PENALTY * off — наскільки опція влучає у профіль, а не шумить.
+    Солодкість не вважаємо шумом (її додаємо навмисно для балансу).
+    """
+    on = 0.0
+    off = 0.0
+    for key, value in chans.items():
+        name = key.split("::", 1)[1]
+        if name in desired_set:
+            on += value
+        elif name != SWEET:
+            off += value
+    return on, off, on - OFF_PENALTY * off
+
+
+def _dose(
+    db: Session,
+    material_id: int,
+    part: str,
+    form: str,
+    pit: str,
+    desired_set: Set[str],
+) -> float:
+    """Підібрати дозу неосновного інгредієнта за «чистотою» внеску в профіль.
+
+    Чим вища частка корисного сигналу (бажане проти стороннього), тим більша
+    доза. Шумні інгредієнти (напр. цедра з потужним цитрусом для немедового
+    профілю) стишуються до мінімального акценту.
+    """
+    if material_id <= 0:
+        return SWEETENER_AROMA
+    chans = _option_breakdown(db, material_id).get((part, form, pit), {})
+    on, off, _net = _option_net(chans, desired_set)
+    if on + off <= 0:
+        return DOSE_MIN
+    cleanliness = on / (on + off)
+    return round(DOSE_MIN + (DOSE_MAX - DOSE_MIN) * cleanliness, 2)
 
 
 def _find_candidates(
-    db: Session, missing_names: Set[str], exclude_ids: Set[int]
+    db: Session, missing_names: Set[str], exclude_ids: Set[int], desired_set: Set[str]
 ) -> List[Tuple[int, str, str, str, float, Set[str]]]:
-    """Кандидати-сировина, що дають потрібні характеристики.
+    """Кандидати, що закривають прогалини профілю з мінімумом сторонніх нот.
 
-    Повертає list of (material_id, part, form, pit, value, covered_chars).
+    Повертає list of (material_id, part, form, pit, net, covered_chars), де net —
+    «чистота» внеску (корисне мінус шум). Сортуємо: спершу скільки прогалин
+    закриває, далі — вищий net (менше перебиває бажаний профіль).
     """
     if not missing_names:
         return []
@@ -225,40 +318,25 @@ def _find_candidates(
 
     candidates: List[Tuple[int, str, str, str, float, Set[str]]] = []
     for mid in material_ids:
-        best = _best_option_for_chars(db, mid, missing_names)
+        best: Optional[Tuple[Tuple[int, float], str, str, str, float, Set[str]]] = None
+        for (part, form, pit), chans in _option_breakdown(db, mid).items():
+            covered = {
+                key.split("::", 1)[1]
+                for key, value in chans.items()
+                if value > 0 and key.split("::", 1)[1] in missing_names
+            }
+            if not covered:
+                continue
+            _on, _off, net = _option_net(chans, desired_set)
+            sort_key = (len(covered), net)
+            if best is None or sort_key > best[0]:
+                best = (sort_key, part, form, pit, net, covered)
         if best is None:
             continue
-        part, form, pit, val = best
-        if val <= 0:
-            continue
-        covered = _covered_chars(db, mid, part, form, pit, missing_names)
-        if not covered:
-            continue
-        candidates.append((mid, part, form, pit, val, covered))
+        _key, part, form, pit, net, covered = best
+        candidates.append((mid, part, form, pit, net, covered))
     candidates.sort(key=lambda c: (len(c[5]), c[4]), reverse=True)
     return candidates
-
-
-def _covered_chars(
-    db: Session, material_id: int, part: str, form: str, pit: str, target: Set[str]
-) -> Set[str]:
-    rows = db.scalars(
-        select(MaterialCompound).where(
-            MaterialCompound.raw_material_id == material_id,
-            MaterialCompound.part == part,
-            MaterialCompound.form == form,
-            MaterialCompound.pit == pit,
-        )
-    ).all()
-    covered: Set[str] = set()
-    for mc in rows:
-        compound = db.get(AromaCompound, mc.compound_id)
-        if compound is None:
-            continue
-        for char_name in _compound_chars(compound):
-            if char_name in target:
-                covered.add(char_name)
-    return covered
 
 
 def _option_breakdown(
@@ -341,19 +419,15 @@ def _find_harmony(
     for mid in material_ids:
         for (part, form, pit), chans in _option_breakdown(db, mid).items():
             harsh = sum(chans.get(f"taste::{a}", 0.0) for a in HARSH_AXES)
-            if harsh > 0.6:
-                continue  # не додаємо гіркоти заради кількості
-            aroma_val = sum(v for k, v in chans.items() if k.startswith("aroma::"))
-            if aroma_val <= 0:
+            if harsh > 0.4:
+                continue  # не додаємо гострих смаків заради кількості
+            on, _off, net = _option_net(chans, desired_set)
+            # гармонізуючий інгредієнт мусить РЕАЛЬНО підсилювати бажаний профіль
+            # і майже не шуміти; інакше краще менше інгредієнтів, ніж сторонні ноти
+            if on <= 0 or net <= 0:
                 continue
-            desired_hits = sum(
-                v
-                for k, v in chans.items()
-                if k.startswith("aroma::") and k.split("::", 1)[1] in desired_set
-            )
-            quality = desired_hits * 2.0 + aroma_val - harsh
-            if best is None or quality > best[5]:
-                best = (mid, part, form, pit, desired_hits > 0, quality)
+            if best is None or net > best[5]:
+                best = (mid, part, form, pit, True, net)
     if best is None:
         return None
     return best[0], best[1], best[2], best[3], best[4]
@@ -362,9 +436,20 @@ def _find_harmony(
 def _finalize(
     db: Session, selections: List[ResolvedSelection], desired_set: Set[str]
 ) -> Tuple[List[ResolvedSelection], List[str]]:
-    """Балансування смаку (цукром/кислотою) + мінімум інгредієнтів."""
+    """Дозування інгредієнтів + балансування смаку + мінімум інгредієнтів."""
     notes: List[str] = []
     used: Set[int] = {s.material_id for s in selections}
+    # Мед не підказуємо як звичайну сировину — лише як підсолоджувач, щоб уникнути
+    # подвійної згадки (мед-сировина + мед-солодкість).
+    honey_id = _honey_id(db)
+    honey_block = {honey_id} if honey_id else set()
+
+    # Основна сировина — повна доза; решту дозуємо за «чистотою» внеску.
+    for s in selections:
+        if s.role == "main":
+            s.amount = MAIN_AMOUNT
+        else:
+            s.amount = _dose(db, s.material_id, s.part, s.form, s.pit, desired_set)
 
     profile = _build_profile(db, selections)
     sweet = profile.taste.get(SWEET, 0.0)
@@ -399,24 +484,51 @@ def _finalize(
         needed_sweet = max(needed_sweet, sour * 0.6)
         reasons.append("згладити надмірну кислотність")
 
-    # 1) Додаємо цукор, якщо потрібно
+    # 1) Додаємо підсолоджувач (мед або цукор), якщо потрібно
     dose = round(needed_sweet - sweet, 2)
     if dose > 0:
-        selections.append(
-            ResolvedSelection(
-                material_id=0,
-                name=SUGAR_NAME,
-                part="whole",
-                form="na",
-                pit="na",
-                role="sweetener",
-                sweet_add=dose,
+        # мед — лише якщо профіль «медовий/квітковий» і мед ще не в композиції
+        use_honey = (
+            honey_id is not None
+            and bool(desired_set & HONEY_AFFINITY)
+            and honey_id not in used
+        )
+        if use_honey:
+            # мед: солодкість + доречні медові/квіткові ноти
+            selections.append(
+                ResolvedSelection(
+                    material_id=honey_id,
+                    name=HONEY_NAME,
+                    part="whole",
+                    form="fresh",
+                    pit="na",
+                    role="sweetener",
+                    sweet_add=dose,
+                    amount=SWEETENER_AROMA,
+                )
             )
-        )
+            used.add(honey_id)
+            notes.append(
+                f"{HONEY_NAME} (~{dose}): солодкість і медові ноти, щоб "
+                f"{', '.join(reasons)}"
+            )
+        else:
+            selections.append(
+                ResolvedSelection(
+                    material_id=0,
+                    name=SUGAR_NAME,
+                    part="whole",
+                    form="na",
+                    pit="na",
+                    role="sweetener",
+                    sweet_add=dose,
+                    amount=SWEETENER_AROMA,
+                )
+            )
+            notes.append(
+                f"{SUGAR_NAME} (~{dose}): солодкість, щоб {', '.join(reasons)}"
+            )
         sweet += dose
-        notes.append(
-            f"{SUGAR_NAME} (~{dose}): солодкість, щоб {', '.join(reasons)}"
-        )
 
     # 2) Нудотно-солодко й «пласко» → додати кислинку для свіжості
     if (
@@ -429,34 +541,70 @@ def _finalize(
         if prov:
             mid, part, form, pit = prov
             selections.append(
-                ResolvedSelection(mid, _resolve_name(db, mid), part, form, pit, "balance")
+                ResolvedSelection(
+                    mid, _resolve_name(db, mid), part, form, pit, "balance",
+                    amount=_dose(db, mid, part, form, pit, desired_set),
+                )
             )
             used.add(mid)
             notes.append(
                 f"{_resolve_name(db, mid)}: свіжа кислинка проти надмірної солодкості"
             )
 
-    # 3) Мінімум ароматичних інгредієнтів для гармонії (цукор не рахуємо)
+    # 3) Підсилення профілю: додаємо ще чисті складові, поки якась бажана нота
+    #    слабка (або поки не набрали мінімум інгредієнтів), у межах стелі.
     def _aromatic_count() -> int:
         return sum(1 for s in selections if s.material_id > 0)
 
+    def _weakest_desired() -> Optional[str]:
+        prof = _build_profile(db, selections)
+        weak = [(c, prof.total(c)) for c in desired_set]
+        weak = [(c, v) for c, v in weak if v < TARGET_STRENGTH]
+        if not weak:
+            return None
+        return min(weak, key=lambda cv: cv[1])[0]
+
     guard = 0
-    while _aromatic_count() < MIN_INGREDIENTS and guard < 6:
+    while guard < MAX_INGREDIENTS + MIN_INGREDIENTS:
         guard += 1
-        harm = _find_harmony(db, desired_set, used)
-        if harm is None:
+        count = _aromatic_count()
+        if count >= MAX_INGREDIENTS:
             break
-        mid, part, form, pit, reinforces = harm
+        target_char = _weakest_desired()
+        need_min = count < MIN_INGREDIENTS
+        if target_char is None and not need_min:
+            break  # достатньо складових і профіль уже виразний
+
+        mid = part = form = pit = None
+        block = used | honey_block
+        # 3а) прицільно підсилюємо найслабшу бажану ноту чистою сировиною
+        if target_char is not None:
+            for c in _find_candidates(db, {target_char}, block, desired_set):
+                if c[4] > 0:  # net > 0 — підсилює, майже не шумить
+                    mid, part, form, pit = c[0], c[1], c[2], c[3]
+                    break
+        # 3б) інакше (для добору мінімуму) — будь-який чистий гармонійний інгредієнт
+        if mid is None:
+            harm = _find_harmony(db, desired_set, block)
+            if harm is None:
+                break
+            mid, part, form, pit, _reinf = harm
+
         selections.append(
-            ResolvedSelection(mid, _resolve_name(db, mid), part, form, pit, "harmony")
+            ResolvedSelection(
+                mid, _resolve_name(db, mid), part, form, pit, "harmony",
+                amount=_dose(db, mid, part, form, pit, desired_set),
+            )
         )
         used.add(mid)
-        reason = (
-            "підсилює бажаний профіль"
-            if reinforces
-            else "додає ароматичної складності для гармонії"
-        )
-        notes.append(f"{_resolve_name(db, mid)}: {reason}")
+        if target_char is not None:
+            notes.append(
+                f"{_resolve_name(db, mid)}: підсилює «{target_char}» у профілі"
+            )
+        else:
+            notes.append(
+                f"{_resolve_name(db, mid)}: додає складності для гармонії"
+            )
 
     return selections, notes
 
@@ -502,6 +650,7 @@ def _make_variant(
             form=s.form,
             pit=s.pit,
             role=s.role,
+            amount=round(s.amount, 2),
         )
         for s in selections
     ]
@@ -537,6 +686,89 @@ def _make_variant(
 
 def _overall(variant: RecipeVariant) -> float:
     return 0.6 * variant.match_score + 0.4 * variant.balance_score
+
+
+def _feasibility(
+    db: Session,
+    chosen: List[ResolvedSelection],
+    desired_names: List[str],
+    variants: List[RecipeVariant],
+) -> ProfileFeasibility:
+    """Чи можна гарантувати бажаний профіль для обраної сировини.
+
+    - «impossible»: якусь бажану ноту не дає жодна доступна сировина (навіть
+      із додатками) — її неможливо створити.
+    - «dominated»: ноти присутні, але обрана сировина дає сильніші сторонні
+      ноти, що перебивають профіль — гарантувати його не можна.
+    - «ok»: профіль досяжний.
+    """
+    if not desired_names:
+        return ProfileFeasibility(status="ok", achievable=True, message="")
+
+    desired_set = set(desired_names)
+    chosen_profile = _build_profile(db, chosen)
+    chosen_ids = {s.material_id for s in chosen}
+
+    # 1) Досяжність кожної бажаної характеристики (обрана сировина або будь-який кандидат)
+    unreachable: List[str] = []
+    for name in desired_names:
+        if chosen_profile.total(name) > 0:
+            continue
+        if not _find_candidates(db, {name}, chosen_ids, desired_set):
+            unreachable.append(name)
+
+    # 2) Чи перебиває обрана сировина бажаний профіль (за найкращим варіантом)
+    best = max(variants, key=lambda v: v.match_score) if variants else None
+    dominating: List[str] = []
+    if best is not None:
+        scored = list(best.aroma_profile) + list(best.taste_profile)
+        max_desired = max(
+            (s.score for s in scored if s.name in desired_set), default=0.0
+        )
+        # «перебиває» = стороння нота помітно гучніша за найсильнішу бажану
+        floor = max(max_desired * 1.6, 1.0)
+        seen: Set[str] = set()
+        for s in sorted(scored, key=lambda x: x.score, reverse=True):
+            if s.name in desired_set or s.name == SWEET:
+                continue
+            if s.score > floor and s.name not in seen:
+                seen.add(s.name)
+                dominating.append(s.name)
+            if len(dominating) >= 4:
+                break
+
+    if unreachable:
+        return ProfileFeasibility(
+            status="impossible",
+            achievable=False,
+            unreachable=unreachable,
+            dominating=dominating,
+            message=(
+                "Цей профіль неможливо гарантувати: ноти "
+                f"«{', '.join(unreachable)}» не дає жодна доступна сировина "
+                "навіть із додатками. Додайте сировину з цими властивостями "
+                "або приберіть ці характеристики."
+            ),
+        )
+
+    if dominating:
+        return ProfileFeasibility(
+            status="dominated",
+            achievable=False,
+            dominating=dominating,
+            message=(
+                "Профіль присутній, але не домінує: обрана сировина дає сильніші "
+                f"ноти ({', '.join(dominating)}), які його перебивають. "
+                "Спробуйте м'якшу форму інгредієнтів (напр. сік чи суху замість "
+                "свіжої цедри) або іншу основну сировину."
+            ),
+        )
+
+    return ProfileFeasibility(
+        status="ok",
+        achievable=True,
+        message="Профіль досяжний на обраній сировині.",
+    )
 
 
 def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
@@ -576,7 +808,15 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
     base_profile = _build_profile(db, chosen)
     base_missing = {n for n in desired_names if base_profile.total(n) <= 0}
     exclude_ids = {s.material_id for s in chosen}
-    candidates = _find_candidates(db, base_missing, exclude_ids) if base_missing else []
+    # Мед не пропонуємо як звичайну сировину — він заходить лише як підсолоджувач
+    # (медові ноти + солодкість) у кроці балансування, щоб не дублювався.
+    honey_id = _honey_id(db)
+    auto_exclude = exclude_ids | ({honey_id} if honey_id else set())
+    candidates = (
+        _find_candidates(db, base_missing, auto_exclude, desired_set)
+        if base_missing
+        else []
+    )
 
     # Набори-заготовки композицій (до балансування)
     seeds: List[Tuple[str, List[ResolvedSelection]]] = []
@@ -625,4 +865,11 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
         if len(unique) >= MAX_VARIANTS:
             break
 
-    return GenerateResponse(base=base_name, desired=desired_names, variants=unique)
+    feasibility = _feasibility(db, chosen, desired_names, unique)
+
+    return GenerateResponse(
+        base=base_name,
+        desired=desired_names,
+        variants=unique,
+        feasibility=feasibility,
+    )

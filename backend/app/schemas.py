@@ -62,6 +62,7 @@ class MaterialInComposition(BaseModel):
     form: str
     pit: str
     role: str  # main | additional | suggested | balance | harmony | sweetener
+    amount: float = 1.0  # відносна доза (основна сировина = 1.0)
 
 
 class CharacteristicScore(BaseModel):
@@ -84,7 +85,19 @@ class RecipeVariant(BaseModel):
     explanation: str
 
 
+class ProfileFeasibility(BaseModel):
+    # ok | dominated | impossible
+    status: str = "ok"
+    achievable: bool = True
+    # бажані характеристики, яких не може дати жодна доступна сировина
+    unreachable: List[str] = Field(default_factory=list)
+    # сторонні ноти обраної сировини, що перебивають бажаний профіль
+    dominating: List[str] = Field(default_factory=list)
+    message: str = ""
+
+
 class GenerateResponse(BaseModel):
     base: Optional[str] = None
     desired: List[str]
     variants: List[RecipeVariant]
+    feasibility: ProfileFeasibility = Field(default_factory=ProfileFeasibility)

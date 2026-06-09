@@ -95,6 +95,11 @@ function VariantCard({ variant, index }) {
               {m.role !== "sweetener" ? ` · ${variantLabel(m)}` : ""}
               {" · "}
               {ROLE_LABELS[m.role] || m.role}
+              {m.role === "main"
+                ? " · основа"
+                : m.amount != null
+                ? ` · ${Math.round(m.amount * 100)}%`
+                : ""}
             </span>
           </span>
         ))}
@@ -139,6 +144,31 @@ function VariantCard({ variant, index }) {
   );
 }
 
+function FeasibilityBanner({ feasibility }) {
+  if (!feasibility || feasibility.status === "ok") return null;
+  const impossible = feasibility.status === "impossible";
+  const cls = impossible
+    ? "border-red-300 bg-red-50 text-red-800"
+    : "border-amber-300 bg-amber-50 text-amber-900";
+  const title = impossible
+    ? "Профіль неможливо гарантувати"
+    : "Профіль не домінуватиме";
+  return (
+    <div className={`rounded-2xl border p-4 ${cls}`}>
+      <div className="flex items-center gap-2 font-semibold">
+        <span aria-hidden>{impossible ? "⛔" : "⚠️"}</span>
+        {title}
+      </div>
+      <p className="mt-1 text-sm">{feasibility.message}</p>
+      {feasibility.dominating?.length > 0 && (
+        <p className="mt-1 text-sm">
+          Перебивають: <span className="font-medium">{feasibility.dominating.join(", ")}</span>
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function RecipeResults({ result }) {
   if (!result) return null;
   return (
@@ -151,6 +181,7 @@ export default function RecipeResults({ result }) {
           {result.desired.join(", ") || "не задано"}
         </span>
       </div>
+      <FeasibilityBanner feasibility={result.feasibility} />
       {result.variants.map((v, i) => (
         <VariantCard key={i} variant={v} index={i} />
       ))}

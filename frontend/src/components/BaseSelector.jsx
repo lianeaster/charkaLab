@@ -11,8 +11,8 @@ export default function BaseSelector({ bases, value, onChange }) {
             className={
               "rounded-full border px-4 py-2 text-sm transition " +
               (active
-                ? "border-macerate-600 bg-macerate-600 text-white"
-                : "border-stone-300 bg-white text-stone-700 hover:border-macerate-500")
+                ? "border-charka-600 bg-charka-600 text-white"
+                : "border-stone-300 bg-white text-stone-700 hover:border-charka-500")
             }
           >
             {b.name}

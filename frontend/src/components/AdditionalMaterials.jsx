@@ -42,7 +42,7 @@ export default function AdditionalMaterials({ rows, onChange }) {
 
       <button
         type="button"
-        className="self-start rounded-lg border border-dashed border-macerate-500 px-4 py-2 text-sm font-medium text-macerate-600 hover:bg-macerate-50 disabled:cursor-not-allowed disabled:opacity-40"
+        className="self-start rounded-lg border border-dashed border-charka-500 px-4 py-2 text-sm font-medium text-charka-600 hover:bg-charka-50 disabled:cursor-not-allowed disabled:opacity-40"
         onClick={addRow}
         disabled={rows.length >= MAX_ROWS}
       >

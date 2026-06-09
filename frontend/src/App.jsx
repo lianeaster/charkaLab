@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
+import logo from "./assets/logo.png";
 import MaterialAutocomplete from "./components/MaterialAutocomplete";
 import AdditionalMaterials from "./components/AdditionalMaterials";
 import BaseSelector from "./components/BaseSelector";
@@ -11,7 +12,7 @@ function Section({ step, title, hint, children }) {
     <section className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
       <div className="mb-3">
         <h2 className="text-base font-semibold text-stone-800">
-          <span className="mr-2 inline-flex h-6 w-6 items-center justify-center rounded-full bg-macerate-600 text-xs text-white">
+          <span className="mr-2 inline-flex h-6 w-6 items-center justify-center rounded-full bg-charka-600 text-xs text-white">
             {step}
           </span>
           {title}
@@ -71,9 +72,13 @@ export default function App() {
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-8">
-      <header className="mb-6">
-        <h1 className="text-2xl font-bold text-stone-900">charkaLab</h1>
-        <p className="text-stone-500">
+      <header className="mb-6 text-center">
+        <img
+          src={logo}
+          alt="charkaLab"
+          className="mx-auto w-full max-w-sm object-contain"
+        />
+        <p className="mt-3 text-stone-500">
           Генератор рецептів мацератів на основі ароматичних сполук
         </p>
       </header>
@@ -115,7 +120,7 @@ export default function App() {
           type="button"
           onClick={handleGenerate}
           disabled={!canSubmit}
-          className="rounded-xl bg-macerate-600 px-6 py-3 text-base font-semibold text-white shadow hover:bg-macerate-700 disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-xl bg-charka-600 px-6 py-3 text-base font-semibold text-white shadow hover:bg-charka-700 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {loading ? "Генерація…" : "Згенерувати рецепти"}
         </button>

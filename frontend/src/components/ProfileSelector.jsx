@@ -19,8 +19,8 @@ export default function ProfileSelector({ characteristics, selected, onChange })
             className={
               "rounded-full border px-3 py-1.5 text-sm transition " +
               (active
-                ? "border-emerald-600 bg-emerald-600 text-white"
-                : "border-stone-300 bg-white text-stone-700 hover:border-emerald-500")
+                ? "border-wine-600 bg-wine-600 text-white"
+                : "border-stone-300 bg-white text-stone-700 hover:border-wine-500")
             }
           >
             {c.name}

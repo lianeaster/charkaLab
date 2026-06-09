@@ -65,7 +65,7 @@ export default function MaterialAutocomplete({ value, onChange, placeholder }) {
       <div className="relative flex-1" ref={boxRef}>
         <input
           type="text"
-          className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm outline-none focus:border-macerate-500 focus:ring-1 focus:ring-macerate-500"
+          className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm outline-none focus:border-charka-500 focus:ring-1 focus:ring-charka-500"
           placeholder={placeholder || "Почніть вводити назву сировини…"}
           value={query}
           onChange={(e) => {
@@ -80,7 +80,7 @@ export default function MaterialAutocomplete({ value, onChange, placeholder }) {
               <li key={m.id}>
                 <button
                   type="button"
-                  className="block w-full px-3 py-2 text-left text-sm hover:bg-macerate-50"
+                  className="block w-full px-3 py-2 text-left text-sm hover:bg-charka-50"
                   onClick={() => selectMaterial(m)}
                 >
                   {m.name}

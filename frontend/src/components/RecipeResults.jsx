@@ -14,14 +14,14 @@ function ProfileBars({ title, items }) {
             <span
               className={
                 "w-28 shrink-0 " +
-                (it.covered ? "font-medium text-emerald-700" : "text-stone-500")
+                (it.covered ? "font-medium text-charka-700" : "text-stone-500")
               }
             >
               {it.name}
             </span>
             <div className="h-2 flex-1 overflow-hidden rounded bg-stone-100">
               <div
-                className={it.covered ? "h-full bg-emerald-500" : "h-full bg-stone-300"}
+                className={it.covered ? "h-full bg-charka-500" : "h-full bg-stone-300"}
                 style={{ width: `${(it.score / max) * 100}%` }}
               />
             </div>
@@ -38,7 +38,7 @@ function ProfileBars({ title, items }) {
 function ScoreBadge({ score }) {
   const pct = Math.round(score * 100);
   const color =
-    pct >= 80 ? "bg-emerald-600" : pct >= 50 ? "bg-amber-500" : "bg-stone-400";
+    pct >= 80 ? "bg-charka-600" : pct >= 50 ? "bg-charka-400" : "bg-stone-400";
   return (
     <span className={`rounded-full px-3 py-1 text-sm font-semibold text-white ${color}`}>
       {pct}% збіг
@@ -51,7 +51,7 @@ function VariantCard({ variant, index }) {
     <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
       <div className="mb-3 flex items-start justify-between gap-3">
         <div>
-          <span className="text-xs font-medium text-macerate-600">
+          <span className="text-xs font-medium text-charka-600">
             Варіант {index + 1}
           </span>
           <h3 className="text-lg font-semibold text-stone-800">{variant.title}</h3>
@@ -66,7 +66,7 @@ function VariantCard({ variant, index }) {
             className={
               "rounded-lg border px-3 py-1.5 text-sm " +
               (m.role === "suggested"
-                ? "border-macerate-300 bg-macerate-50 text-macerate-700"
+                ? "border-wine-200 bg-wine-50 text-wine-700"
                 : "border-stone-200 bg-stone-50 text-stone-700")
             }
           >

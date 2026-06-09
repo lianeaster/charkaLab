@@ -69,12 +69,14 @@ class CharacteristicScore(BaseModel):
 class RecipeVariant(BaseModel):
     title: str
     match_score: float
+    balance_score: float
     materials: List[MaterialInComposition]
     aroma_profile: List[CharacteristicScore]
     taste_profile: List[CharacteristicScore]
     covered: List[str]
     missing: List[str]
     compounds: List[CompoundContribution]
+    balance_notes: List[str] = Field(default_factory=list)
     explanation: str
 
 

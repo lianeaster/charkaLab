@@ -33,6 +33,7 @@ export const FORM_LABELS = {
   fresh: "свіжа",
   dry: "суха",
   extract: "екстракт",
+  na: "—",
 };
 
 export const PIT_LABELS = {
@@ -45,4 +46,7 @@ export const ROLE_LABELS = {
   main: "основна",
   additional: "додаткова",
   suggested: "підібрана",
+  balance: "для балансу",
+  harmony: "для гармонії",
+  sweetener: "для солодкості",
 };

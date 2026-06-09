@@ -46,6 +46,25 @@ function ScoreBadge({ score }) {
   );
 }
 
+function BalanceBadge({ score }) {
+  const pct = Math.round(score * 100);
+  const color =
+    pct >= 85 ? "bg-wine-500" : pct >= 60 ? "bg-wine-200 text-wine-700" : "bg-stone-300 text-stone-700";
+  const textColor = pct >= 85 ? "text-white" : "";
+  return (
+    <span className={`rounded-full px-3 py-1 text-sm font-semibold ${color} ${textColor}`}>
+      {pct}% баланс
+    </span>
+  );
+}
+
+const ROLE_CHIP = {
+  suggested: "border-wine-200 bg-wine-50 text-wine-700",
+  balance: "border-charka-200 bg-charka-50 text-charka-700",
+  sweetener: "border-charka-200 bg-charka-50 text-charka-700",
+  harmony: "border-stone-300 bg-white text-stone-600",
+};
+
 function VariantCard({ variant, index }) {
   return (
     <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
@@ -56,7 +75,10 @@ function VariantCard({ variant, index }) {
           </span>
           <h3 className="text-lg font-semibold text-stone-800">{variant.title}</h3>
         </div>
-        <ScoreBadge score={variant.match_score} />
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
+          <ScoreBadge score={variant.match_score} />
+          <BalanceBadge score={variant.balance_score} />
+        </div>
       </div>
 
       <div className="mb-4 flex flex-wrap gap-2">
@@ -65,15 +87,12 @@ function VariantCard({ variant, index }) {
             key={i}
             className={
               "rounded-lg border px-3 py-1.5 text-sm " +
-              (m.role === "suggested"
-                ? "border-wine-200 bg-wine-50 text-wine-700"
-                : "border-stone-200 bg-stone-50 text-stone-700")
+              (ROLE_CHIP[m.role] || "border-stone-200 bg-stone-50 text-stone-700")
             }
           >
             <span className="font-medium">{m.name}</span>
             <span className="text-xs text-stone-500">
-              {" · "}
-              {FORM_LABELS[m.form] || m.form}
+              {m.form !== "na" ? ` · ${FORM_LABELS[m.form] || m.form}` : ""}
               {m.pit !== "na" ? ` · ${PIT_LABELS[m.pit]}` : ""}
               {" · "}
               {ROLE_LABELS[m.role] || m.role}
@@ -82,7 +101,20 @@ function VariantCard({ variant, index }) {
         ))}
       </div>
 
-      <p className="mb-4 text-sm text-stone-600">{variant.explanation}</p>
+      <p className="mb-3 text-sm text-stone-600">{variant.explanation}</p>
+
+      {variant.balance_notes && variant.balance_notes.length > 0 && (
+        <div className="mb-4 rounded-lg border border-charka-100 bg-charka-50/60 p-3">
+          <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-charka-700">
+            Балансування
+          </h4>
+          <ul className="flex flex-col gap-0.5 text-sm text-stone-600">
+            {variant.balance_notes.map((n, i) => (
+              <li key={i}>• {n}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="mb-4 grid gap-4 sm:grid-cols-2">
         <ProfileBars title="Аромат" items={variant.aroma_profile} />

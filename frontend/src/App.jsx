@@ -52,12 +52,18 @@ export default function App() {
       const payload = {
         main_material: {
           material_id: mainMaterial.material_id,
+          part: mainMaterial.part,
           form: mainMaterial.form,
           pit: mainMaterial.pit,
         },
         additional_materials: additional
-          .filter((a) => a.material_id)
-          .map((a) => ({ material_id: a.material_id, form: a.form, pit: a.pit })),
+          .filter((a) => a && a.material_id)
+          .map((a) => ({
+            material_id: a.material_id,
+            part: a.part,
+            form: a.form,
+            pit: a.pit,
+          })),
         base_id: baseId,
         desired_characteristics: desired,
       };

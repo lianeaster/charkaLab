@@ -13,7 +13,9 @@ export default function MaterialAutocomplete({ value, onChange, placeholder }) {
   const boxRef = useRef(null);
 
   useEffect(() => {
-    setQuery(value?.name || "");
+    // Синхронізуємо текст лише коли є реальний вибір; при скиданні
+    // (value=null) не затираємо те, що користувач друкує.
+    if (value?.material_id) setQuery(value.name || "");
   }, [value?.material_id]);
 
   useEffect(() => {
@@ -36,6 +38,21 @@ export default function MaterialAutocomplete({ value, onChange, placeholder }) {
     }, 150);
     return () => clearTimeout(handle);
   }, [query, open]);
+
+  function handleInput(text) {
+    setQuery(text);
+    setOpen(true);
+    // Текст розійшовся з вибраною сировиною → скидаємо вибір,
+    // щоб не згенерувати рецепт по застарілому матеріалі.
+    if (value?.material_id && text.trim() !== value.name) {
+      onChange(null);
+      setOptions([]);
+    }
+  }
+
+  const trimmed = query.trim();
+  const noMatch =
+    open && trimmed.length > 0 && suggestions.length === 0 && !value?.material_id;
 
   async function selectMaterial(m) {
     setQuery(m.name);
@@ -67,15 +84,22 @@ export default function MaterialAutocomplete({ value, onChange, placeholder }) {
       <div className="relative flex-1" ref={boxRef}>
         <input
           type="text"
-          className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm outline-none focus:border-charka-500 focus:ring-1 focus:ring-charka-500"
+          className={
+            "w-full rounded-lg border px-3 py-2 text-sm outline-none focus:ring-1 " +
+            (noMatch
+              ? "border-red-300 focus:border-red-400 focus:ring-red-400"
+              : "border-stone-300 focus:border-charka-500 focus:ring-charka-500")
+          }
           placeholder={placeholder || "Почніть вводити назву сировини…"}
           value={query}
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setOpen(true);
-          }}
+          onChange={(e) => handleInput(e.target.value)}
           onFocus={() => setOpen(true)}
         />
+        {noMatch && (
+          <p className="mt-1 text-xs text-red-600">
+            Немає такої сировини в базі. Оберіть зі списку.
+          </p>
+        )}
         {open && suggestions.length > 0 && (
           <ul className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-lg border border-stone-200 bg-white shadow-lg">
             {suggestions.map((m) => (

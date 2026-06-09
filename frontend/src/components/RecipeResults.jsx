@@ -1,4 +1,4 @@
-import { FORM_LABELS, PIT_LABELS, ROLE_LABELS } from "../api";
+import { ROLE_LABELS, variantLabel } from "../api";
 
 function ProfileBars({ title, items }) {
   if (!items.length) return null;
@@ -92,8 +92,7 @@ function VariantCard({ variant, index }) {
           >
             <span className="font-medium">{m.name}</span>
             <span className="text-xs text-stone-500">
-              {m.form !== "na" ? ` · ${FORM_LABELS[m.form] || m.form}` : ""}
-              {m.pit !== "na" ? ` · ${PIT_LABELS[m.pit]}` : ""}
+              {m.role !== "sweetener" ? ` · ${variantLabel(m)}` : ""}
               {" · "}
               {ROLE_LABELS[m.role] || m.role}
             </span>

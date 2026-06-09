@@ -63,6 +63,7 @@ SUGAR_HEADROOM = 0.1
 class ResolvedSelection:
     material_id: int
     name: str
+    part: str
     form: str
     pit: str
     role: str  # main | additional | suggested | balance | harmony | sweetener
@@ -101,6 +102,7 @@ def _add_selection_to_profile(
     rows = db.scalars(
         select(MaterialCompound).where(
             MaterialCompound.raw_material_id == selection.material_id,
+            MaterialCompound.part == selection.part,
             MaterialCompound.form == selection.form,
             MaterialCompound.pit == selection.pit,
         )
@@ -173,31 +175,34 @@ def _resolve_name(db: Session, material_id: int) -> str:
 
 def _best_option_for_chars(
     db: Session, material_id: int, target_chars: Set[str]
-) -> Optional[Tuple[str, str, float]]:
-    """Знайти (form, pit), що максимально покриває потрібні характеристики."""
+) -> Optional[Tuple[str, str, str, float]]:
+    """Знайти (part, form, pit), що максимально покриває потрібні характеристики."""
     rows = db.scalars(
         select(MaterialCompound).where(
             MaterialCompound.raw_material_id == material_id
         )
     ).all()
-    by_option: Dict[Tuple[str, str], float] = defaultdict(float)
+    by_option: Dict[Tuple[str, str, str], float] = defaultdict(float)
     for mc in rows:
         compound = db.get(AromaCompound, mc.compound_id)
         if compound is None:
             continue
         for char_name, weight in _compound_chars(compound).items():
             if char_name in target_chars:
-                by_option[(mc.form, mc.pit)] += mc.intensity * weight
+                by_option[(mc.part, mc.form, mc.pit)] += mc.intensity * weight
     if not by_option:
         return None
-    (form, pit), val = max(by_option.items(), key=lambda kv: kv[1])
-    return form, pit, val
+    (part, form, pit), val = max(by_option.items(), key=lambda kv: kv[1])
+    return part, form, pit, val
 
 
 def _find_candidates(
     db: Session, missing_names: Set[str], exclude_ids: Set[int]
-) -> List[Tuple[int, str, str, float, Set[str]]]:
-    """Кандидати-сировина, що дають потрібні характеристики."""
+) -> List[Tuple[int, str, str, str, float, Set[str]]]:
+    """Кандидати-сировина, що дають потрібні характеристики.
+
+    Повертає list of (material_id, part, form, pit, value, covered_chars).
+    """
     if not missing_names:
         return []
     char_ids = db.scalars(
@@ -218,28 +223,29 @@ def _find_candidates(
         .distinct()
     ).all()
 
-    candidates: List[Tuple[int, str, str, float, Set[str]]] = []
+    candidates: List[Tuple[int, str, str, str, float, Set[str]]] = []
     for mid in material_ids:
         best = _best_option_for_chars(db, mid, missing_names)
         if best is None:
             continue
-        form, pit, val = best
+        part, form, pit, val = best
         if val <= 0:
             continue
-        covered = _covered_chars(db, mid, form, pit, missing_names)
+        covered = _covered_chars(db, mid, part, form, pit, missing_names)
         if not covered:
             continue
-        candidates.append((mid, form, pit, val, covered))
-    candidates.sort(key=lambda c: (len(c[4]), c[3]), reverse=True)
+        candidates.append((mid, part, form, pit, val, covered))
+    candidates.sort(key=lambda c: (len(c[5]), c[4]), reverse=True)
     return candidates
 
 
 def _covered_chars(
-    db: Session, material_id: int, form: str, pit: str, target: Set[str]
+    db: Session, material_id: int, part: str, form: str, pit: str, target: Set[str]
 ) -> Set[str]:
     rows = db.scalars(
         select(MaterialCompound).where(
             MaterialCompound.raw_material_id == material_id,
+            MaterialCompound.part == part,
             MaterialCompound.form == form,
             MaterialCompound.pit == pit,
         )
@@ -257,21 +263,23 @@ def _covered_chars(
 
 def _option_breakdown(
     db: Session, material_id: int
-) -> Dict[Tuple[str, str], Dict[str, float]]:
-    """Для кожної (form, pit) — внески за каналами: aroma_*, taste_* по характеристиках."""
+) -> Dict[Tuple[str, str, str], Dict[str, float]]:
+    """Для кожної (part, form, pit) — внески за каналами: aroma_*, taste_*."""
     rows = db.scalars(
         select(MaterialCompound).where(
             MaterialCompound.raw_material_id == material_id
         )
     ).all()
-    out: Dict[Tuple[str, str], Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    out: Dict[Tuple[str, str, str], Dict[str, float]] = defaultdict(
+        lambda: defaultdict(float)
+    )
     for mc in rows:
         compound = db.get(AromaCompound, mc.compound_id)
         if compound is None:
             continue
         for char_name, weight in _compound_chars(compound).items():
             val = mc.intensity * weight
-            key = (mc.form, mc.pit)
+            key = (mc.part, mc.form, mc.pit)
             if compound.kind in (KIND_AROMA, KIND_BOTH):
                 out[key][f"aroma::{char_name}"] += val
             if compound.kind in (KIND_TASTE, KIND_BOTH):
@@ -281,8 +289,11 @@ def _option_breakdown(
 
 def _find_taste_provider(
     db: Session, needed_char: str, exclude_ids: Set[int], avoid_chars: Set[str]
-) -> Optional[Tuple[int, str, str]]:
-    """Сировина, що дає потрібний СМАК (needed_char) з мінімумом небажаних смаків."""
+) -> Optional[Tuple[int, str, str, str]]:
+    """Сировина, що дає потрібний СМАК (needed_char) з мінімумом небажаних смаків.
+
+    Повертає (material_id, part, form, pit).
+    """
     char_id = db.scalar(
         select(Characteristic.id).where(Characteristic.name == needed_char)
     )
@@ -301,34 +312,34 @@ def _find_taste_provider(
         .distinct()
     ).all()
 
-    best: Optional[Tuple[int, str, str, float]] = None
+    best: Optional[Tuple[int, str, str, str, float]] = None
     for mid in material_ids:
-        for (form, pit), chans in _option_breakdown(db, mid).items():
+        for (part, form, pit), chans in _option_breakdown(db, mid).items():
             need = chans.get(f"taste::{needed_char}", 0.0)
             if need <= 0:
                 continue
             avoid = sum(chans.get(f"taste::{c}", 0.0) for c in avoid_chars)
             net = need - avoid
-            if best is None or net > best[3]:
-                best = (mid, form, pit, net)
+            if best is None or net > best[4]:
+                best = (mid, part, form, pit, net)
     if best is None:
         return None
-    return best[0], best[1], best[2]
+    return best[0], best[1], best[2], best[3]
 
 
 def _find_harmony(
     db: Session, desired_set: Set[str], exclude_ids: Set[int]
-) -> Optional[Tuple[int, str, str, bool]]:
+) -> Optional[Tuple[int, str, str, str, bool]]:
     """Сировина для гармонії (мін. інгредієнтів): підсилює профіль, не додає гіркоти.
 
-    Повертає (material_id, form, pit, reinforces_desired).
+    Повертає (material_id, part, form, pit, reinforces_desired).
     """
     material_ids = db.scalars(
         select(RawMaterial.id).where(RawMaterial.id.notin_(exclude_ids))
     ).all()
-    best: Optional[Tuple[int, str, str, bool, float]] = None
+    best: Optional[Tuple[int, str, str, str, bool, float]] = None
     for mid in material_ids:
-        for (form, pit), chans in _option_breakdown(db, mid).items():
+        for (part, form, pit), chans in _option_breakdown(db, mid).items():
             harsh = sum(chans.get(f"taste::{a}", 0.0) for a in HARSH_AXES)
             if harsh > 0.6:
                 continue  # не додаємо гіркоти заради кількості
@@ -341,11 +352,11 @@ def _find_harmony(
                 if k.startswith("aroma::") and k.split("::", 1)[1] in desired_set
             )
             quality = desired_hits * 2.0 + aroma_val - harsh
-            if best is None or quality > best[4]:
-                best = (mid, form, pit, desired_hits > 0, quality)
+            if best is None or quality > best[5]:
+                best = (mid, part, form, pit, desired_hits > 0, quality)
     if best is None:
         return None
-    return best[0], best[1], best[2], best[3]
+    return best[0], best[1], best[2], best[3], best[4]
 
 
 def _finalize(
@@ -395,6 +406,7 @@ def _finalize(
             ResolvedSelection(
                 material_id=0,
                 name=SUGAR_NAME,
+                part="whole",
                 form="na",
                 pit="na",
                 role="sweetener",
@@ -415,9 +427,9 @@ def _finalize(
     ):
         prov = _find_taste_provider(db, SOUR, used, set(HARSH_AXES))
         if prov:
-            mid, form, pit = prov
+            mid, part, form, pit = prov
             selections.append(
-                ResolvedSelection(mid, _resolve_name(db, mid), form, pit, "balance")
+                ResolvedSelection(mid, _resolve_name(db, mid), part, form, pit, "balance")
             )
             used.add(mid)
             notes.append(
@@ -434,9 +446,9 @@ def _finalize(
         harm = _find_harmony(db, desired_set, used)
         if harm is None:
             break
-        mid, form, pit, reinforces = harm
+        mid, part, form, pit, reinforces = harm
         selections.append(
-            ResolvedSelection(mid, _resolve_name(db, mid), form, pit, "harmony")
+            ResolvedSelection(mid, _resolve_name(db, mid), part, form, pit, "harmony")
         )
         used.add(mid)
         reason = (
@@ -486,6 +498,7 @@ def _make_variant(
         MaterialInComposition(
             material_id=s.material_id,
             name=s.name,
+            part=s.part,
             form=s.form,
             pit=s.pit,
             role=s.role,
@@ -542,6 +555,7 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
         ResolvedSelection(
             material_id=req.main_material.material_id,
             name=_resolve_name(db, req.main_material.material_id),
+            part=req.main_material.part,
             form=req.main_material.form,
             pit=req.main_material.pit,
             role="main",
@@ -552,6 +566,7 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
             ResolvedSelection(
                 material_id=add.material_id,
                 name=_resolve_name(db, add.material_id),
+                part=add.part,
                 form=add.form,
                 pit=add.pit,
                 role="additional",
@@ -570,11 +585,11 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
     greedy = list(chosen)
     still_missing = set(base_missing)
     used: Set[int] = set(exclude_ids)
-    for mid, form, pit, _val, covered in candidates:
+    for mid, part, form, pit, _val, covered in candidates:
         if not (covered & still_missing):
             continue
         greedy.append(
-            ResolvedSelection(mid, _resolve_name(db, mid), form, pit, "suggested")
+            ResolvedSelection(mid, _resolve_name(db, mid), part, form, pit, "suggested")
         )
         used.add(mid)
         still_missing -= covered
@@ -586,10 +601,10 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
     seeds.append(("Збалансована композиція з обраної сировини", list(chosen)))
 
     # 3) Альтернативи: обрана + один кандидат
-    for mid, form, pit, _val, _covered in candidates[:MAX_VARIANTS]:
+    for mid, part, form, pit, _val, _covered in candidates[:MAX_VARIANTS]:
         single = list(chosen)
         single.append(
-            ResolvedSelection(mid, _resolve_name(db, mid), form, pit, "suggested")
+            ResolvedSelection(mid, _resolve_name(db, mid), part, form, pit, "suggested")
         )
         seeds.append((f"Альтернатива: + {_resolve_name(db, mid)}", single))
 
@@ -602,7 +617,7 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
     seen: Set[Tuple] = set()
     unique: List[RecipeVariant] = []
     for v in sorted(variants, key=_overall, reverse=True):
-        key = tuple(sorted((m.material_id, m.form, m.pit) for m in v.materials))
+        key = tuple(sorted((m.material_id, m.part, m.form, m.pit) for m in v.materials))
         if key in seen:
             continue
         seen.add(key)

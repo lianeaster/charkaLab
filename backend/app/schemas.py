@@ -12,6 +12,7 @@ class MaterialSuggestion(BaseModel):
 
 
 class FormOption(BaseModel):
+    part: str = "whole"
     form: str
     pit: str
 
@@ -35,6 +36,7 @@ class BaseOut(BaseModel):
 
 class MaterialSelection(BaseModel):
     material_id: int
+    part: str = Field(default="whole")
     form: str = Field(default="fresh")
     pit: str = Field(default="na")
 
@@ -55,9 +57,10 @@ class CompoundContribution(BaseModel):
 class MaterialInComposition(BaseModel):
     material_id: int
     name: str
+    part: str = "whole"
     form: str
     pit: str
-    role: str  # main | additional | suggested
+    role: str  # main | additional | suggested | balance | harmony | sweetener
 
 
 class CharacteristicScore(BaseModel):

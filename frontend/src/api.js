@@ -33,7 +33,25 @@ export const FORM_LABELS = {
   fresh: "свіжа",
   dry: "суха",
   extract: "екстракт",
+  oil: "олія",
+  juice: "сік",
   na: "—",
+};
+
+export const PART_LABELS = {
+  whole: "",
+  flower: "квіти",
+  zest: "цедра",
+  fruit: "плід",
+  berry: "ягоди",
+  leaf: "листя",
+  root: "корінь",
+  bark: "кора",
+  seed: "насіння",
+  herb: "трава",
+  needle: "хвоя",
+  rhizome: "кореневище",
+  resin: "смола",
 };
 
 export const PIT_LABELS = {
@@ -41,6 +59,18 @@ export const PIT_LABELS = {
   without: "без кісточки",
   na: "—",
 };
+
+// Людська назва варіанту сировини з частини/форми/кісточки
+export function variantLabel(o) {
+  if (!o) return "";
+  const parts = [];
+  const partLabel = PART_LABELS[o.part] ?? o.part;
+  if (partLabel) parts.push(partLabel);
+  const formLabel = FORM_LABELS[o.form] || o.form;
+  if (o.form && o.form !== "na") parts.push(formLabel);
+  if (o.pit && o.pit !== "na") parts.push(PIT_LABELS[o.pit] || o.pit);
+  return parts.join(" · ") || "—";
+}
 
 export const ROLE_LABELS = {
   main: "основна",

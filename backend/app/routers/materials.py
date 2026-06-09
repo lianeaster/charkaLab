@@ -43,20 +43,22 @@ def material_forms(material_id: int, db: Session = Depends(get_db)):
     mat = db.get(RawMaterial, material_id)
     if mat is None:
         raise HTTPException(status_code=404, detail="Сировину не знайдено")
-    pairs = db.execute(
-        select(distinct(MaterialCompound.form), MaterialCompound.pit).where(
-            MaterialCompound.raw_material_id == material_id
-        )
+    rows = db.execute(
+        select(
+            distinct(MaterialCompound.part),
+            MaterialCompound.form,
+            MaterialCompound.pit,
+        ).where(MaterialCompound.raw_material_id == material_id)
     ).all()
     seen = set()
     options: List[FormOption] = []
-    for form, pit in pairs:
-        key = (form, pit)
+    for part, form, pit in rows:
+        key = (part, form, pit)
         if key in seen:
             continue
         seen.add(key)
-        options.append(FormOption(form=form, pit=pit))
-    options.sort(key=lambda o: (o.form, o.pit))
+        options.append(FormOption(part=part, form=form, pit=pit))
+    options.sort(key=lambda o: (o.part, o.form, o.pit))
     return MaterialFormsResponse(
         id=mat.id,
         name=mat.name,

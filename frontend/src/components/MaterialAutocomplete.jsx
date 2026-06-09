@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { api, FORM_LABELS, PIT_LABELS } from "../api";
+import { api, variantLabel } from "../api";
+
+function variantKey(o) {
+  return `${o.part || "whole"}|${o.form}|${o.pit}`;
+}
 
 export default function MaterialAutocomplete({ value, onChange, placeholder }) {
   const [query, setQuery] = useState(value?.name || "");
@@ -38,11 +42,12 @@ export default function MaterialAutocomplete({ value, onChange, placeholder }) {
     setOpen(false);
     const forms = await api.materialForms(m.id);
     setOptions(forms.options);
-    const first = forms.options[0] || { form: "fresh", pit: "na" };
+    const first = forms.options[0] || { part: "whole", form: "fresh", pit: "na" };
     onChange({
       material_id: m.id,
       name: m.name,
       has_pit_variants: m.has_pit_variants,
+      part: first.part || "whole",
       form: first.form,
       pit: first.pit,
       options: forms.options,
@@ -50,14 +55,11 @@ export default function MaterialAutocomplete({ value, onChange, placeholder }) {
   }
 
   const currentOptions = value?.options || options;
-  const forms = [...new Set(currentOptions.map((o) => o.form))];
-  const pitsForForm = currentOptions
-    .filter((o) => o.form === value?.form)
-    .map((o) => o.pit);
 
-  function updateForm(form) {
-    const pits = currentOptions.filter((o) => o.form === form).map((o) => o.pit);
-    onChange({ ...value, form, pit: pits[0] || "na" });
+  function updateVariant(key) {
+    const o = currentOptions.find((x) => variantKey(x) === key);
+    if (!o) return;
+    onChange({ ...value, part: o.part || "whole", form: o.form, pit: o.pit });
   }
 
   return (
@@ -95,32 +97,17 @@ export default function MaterialAutocomplete({ value, onChange, placeholder }) {
       </div>
 
       {value?.material_id && currentOptions.length > 0 && (
-        <div className="flex gap-2">
-          <select
-            className="rounded-lg border border-stone-300 px-2 py-2 text-sm"
-            value={value.form}
-            onChange={(e) => updateForm(e.target.value)}
-          >
-            {forms.map((f) => (
-              <option key={f} value={f}>
-                {FORM_LABELS[f] || f}
-              </option>
-            ))}
-          </select>
-          {pitsForForm.some((p) => p !== "na") && (
-            <select
-              className="rounded-lg border border-stone-300 px-2 py-2 text-sm"
-              value={value.pit}
-              onChange={(e) => onChange({ ...value, pit: e.target.value })}
-            >
-              {pitsForForm.map((p) => (
-                <option key={p} value={p}>
-                  {PIT_LABELS[p] || p}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
+        <select
+          className="rounded-lg border border-stone-300 px-2 py-2 text-sm sm:w-56"
+          value={variantKey({ part: value.part, form: value.form, pit: value.pit })}
+          onChange={(e) => updateVariant(e.target.value)}
+        >
+          {currentOptions.map((o) => (
+            <option key={variantKey(o)} value={variantKey(o)}>
+              {variantLabel(o)}
+            </option>
+          ))}
+        </select>
       )}
     </div>
   );

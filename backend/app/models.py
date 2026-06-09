@@ -7,11 +7,34 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
 
-# form values for MaterialCompound
+# form values (спосіб приготування) for MaterialCompound
 FORM_FRESH = "fresh"
 FORM_DRY = "dry"
 FORM_EXTRACT = "extract"
-FORMS = (FORM_FRESH, FORM_DRY, FORM_EXTRACT)
+FORM_OIL = "oil"
+FORM_JUICE = "juice"
+FORMS = (FORM_FRESH, FORM_DRY, FORM_EXTRACT, FORM_OIL, FORM_JUICE)
+
+# part values (частина сировини / препарат) — у однієї сировини частини
+# (квіти, цедра, плід, ягоди...) мають різний аромат і смак
+PART_WHOLE = "whole"
+PART_FLOWER = "flower"
+PART_ZEST = "zest"
+PART_FRUIT = "fruit"
+PART_BERRY = "berry"
+PART_LEAF = "leaf"
+PART_ROOT = "root"
+PART_BARK = "bark"
+PART_SEED = "seed"
+PART_HERB = "herb"
+PART_NEEDLE = "needle"
+PART_RHIZOME = "rhizome"
+PART_RESIN = "resin"
+PARTS = (
+    PART_WHOLE, PART_FLOWER, PART_ZEST, PART_FRUIT, PART_BERRY, PART_LEAF,
+    PART_ROOT, PART_BARK, PART_SEED, PART_HERB, PART_NEEDLE, PART_RHIZOME,
+    PART_RESIN,
+)
 
 # pit values
 PIT_WITH = "with"
@@ -72,8 +95,8 @@ class MaterialCompound(Base):
     __tablename__ = "material_compounds"
     __table_args__ = (
         UniqueConstraint(
-            "raw_material_id", "compound_id", "form", "pit",
-            name="uq_material_compound_form_pit",
+            "raw_material_id", "compound_id", "part", "form", "pit",
+            name="uq_material_compound_part_form_pit",
         ),
     )
 
@@ -84,6 +107,7 @@ class MaterialCompound(Base):
     compound_id: Mapped[int] = mapped_column(
         ForeignKey("aroma_compounds.id", ondelete="CASCADE"), index=True
     )
+    part: Mapped[str] = mapped_column(String(12), default=PART_WHOLE)
     form: Mapped[str] = mapped_column(String(10), default=FORM_FRESH)
     pit: Mapped[str] = mapped_column(String(10), default=PIT_NA)
     intensity: Mapped[float] = mapped_column(Float, default=1.0)

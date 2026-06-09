@@ -14,12 +14,18 @@
   "materials": [
      {"name": "калина", "has_pit_variants": true,
       "compounds": [
-         {"compound": "лімонен", "form": "fresh", "pit": "na", "intensity": 0.8}
+         {"compound": "лімонен", "part": "whole", "form": "fresh",
+          "pit": "na", "intensity": 0.8}
       ]}
   ]
 }
-form: fresh | dry | extract
+part: whole | flower | zest | fruit | berry | leaf | root | bark | seed |
+      herb | needle | rhizome | resin   (частина сировини / препарат)
+form: fresh | dry | extract | oil | juice   (спосіб приготування)
 pit:  with | without | na
+
+Одна сировина (напр. "апельсин") може мати кілька частин/препаратів
+(квіти-олія, цедра свіжа/суха, сік, екстракт) — у кожного свій профіль.
 
 Дані відображають профіль сировини, а не точні концентрації — інтенсивності
 задані експертно для ранжування композицій.
@@ -143,8 +149,14 @@ COMPOUNDS = [
 ]
 
 
-def _m(compound, form="dry", pit="na", intensity=1.0):
-    return {"compound": compound, "form": form, "pit": pit, "intensity": intensity}
+def _m(compound, form="dry", pit="na", intensity=1.0, part="whole"):
+    return {
+        "compound": compound,
+        "part": part,
+        "form": form,
+        "pit": pit,
+        "intensity": intensity,
+    }
 
 
 MATERIALS = [
@@ -165,10 +177,13 @@ MATERIALS = [
     {"name": "калган (альпінія)", "has_pit_variants": False, "compounds": [
         _m("цинеол (евкаліптол)", "dry", "na", 1.0), _m("камфора", "dry", "na", 0.6),
         _m("метилциннамат", "dry", "na", 0.5),
+        # свіжий корінь — соковитіший, гостріший
+        _m("цинеол (евкаліптол)", "fresh", "na", 0.9), _m("камфора", "fresh", "na", 0.5),
     ]},
     {"name": "валеріана", "has_pit_variants": False, "compounds": [
         _m("борнеол", "dry", "na", 0.8), _m("камфен", "dry", "na", 0.7),
         _m("α-пінен", "dry", "na", 0.6), _m("лімонен", "dry", "na", 0.4),
+        _m("борнеол", "extract", "na", 1.0), _m("камфен", "extract", "na", 0.8),
     ]},
     {"name": "імбир", "has_pit_variants": False, "compounds": [
         _m("джинджерол", "fresh", "na", 1.0), _m("цингіберен", "fresh", "na", 0.8),
@@ -186,6 +201,8 @@ MATERIALS = [
     {"name": "солодка (лакриця)", "has_pit_variants": False, "compounds": [
         _m("гліциризин", "dry", "na", 1.0), _m("анетол", "dry", "na", 0.7),
         _m("естрагол", "dry", "na", 0.5), _m("цинеол (евкаліптол)", "dry", "na", 0.3),
+        # екстракт — концентрована солодкість
+        _m("гліциризин", "extract", "na", 1.4), _m("анетол", "extract", "na", 0.8),
     ]},
     {"name": "любисток", "has_pit_variants": False, "compounds": [
         _m("апіол", "dry", "na", 0.7), _m("лімонен", "dry", "na", 0.5),
@@ -200,12 +217,20 @@ MATERIALS = [
         _m("лімонен", "dry", "na", 0.7),
     ]},
     {"name": "петрушка", "has_pit_variants": False, "compounds": [
-        _m("апіол", "fresh", "na", 0.7), _m("камфора", "fresh", "na", 0.4),
+        # зелень свіжа
+        _m("апіол", "fresh", "na", 0.7, part="herb"),
+        _m("камфора", "fresh", "na", 0.4, part="herb"),
+        _m("гексенал", "fresh", "na", 0.4, part="herb"),
+        # зелень суха
+        _m("апіол", "dry", "na", 0.5, part="herb"),
+        # насіння — концентрований апіол
+        _m("апіол", "dry", "na", 1.0, part="seed"),
     ]},
 
     # --- Трави та листя ---
     {"name": "душиця (орегано)", "has_pit_variants": False, "compounds": [
         _m("тимол", "dry", "na", 0.9), _m("карвакрол", "dry", "na", 0.9),
+        _m("тимол", "fresh", "na", 0.7), _m("карвакрол", "fresh", "na", 0.7),
     ]},
     {"name": "чебрець (тим'ян)", "has_pit_variants": False, "compounds": [
         _m("тимол", "dry", "na", 1.0), _m("лімонен", "dry", "na", 0.4),
@@ -213,10 +238,12 @@ MATERIALS = [
     ]},
     {"name": "чабер", "has_pit_variants": False, "compounds": [
         _m("карвакрол", "dry", "na", 1.0), _m("тимол", "dry", "na", 0.5),
+        _m("карвакрол", "fresh", "na", 0.8), _m("тимол", "fresh", "na", 0.4),
     ]},
     {"name": "іссоп", "has_pit_variants": False, "compounds": [
         _m("камфора", "dry", "na", 0.7), _m("цинеол (евкаліптол)", "dry", "na", 0.6),
         _m("ліналоол", "dry", "na", 0.4),
+        _m("камфора", "fresh", "na", 0.6), _m("цинеол (евкаліптол)", "fresh", "na", 0.5),
     ]},
     {"name": "лаванда", "has_pit_variants": False, "compounds": [
         _m("ліналоол", "fresh", "na", 1.0), _m("камфора", "fresh", "na", 0.4),
@@ -229,6 +256,7 @@ MATERIALS = [
     {"name": "шавлія", "has_pit_variants": False, "compounds": [
         _m("камфора", "dry", "na", 0.7), _m("туйон", "dry", "na", 0.6),
         _m("ліналоол", "dry", "na", 0.4),
+        _m("камфора", "fresh", "na", 0.6), _m("туйон", "fresh", "na", 0.5),
     ]},
     {"name": "зубровка", "has_pit_variants": False, "compounds": [
         _m("кумарин", "dry", "na", 1.0),
@@ -238,6 +266,7 @@ MATERIALS = [
     ]},
     {"name": "полин", "has_pit_variants": False, "compounds": [
         _m("туйон", "dry", "na", 1.0), _m("камфора", "dry", "na", 0.4),
+        _m("туйон", "fresh", "na", 0.8), _m("камфора", "fresh", "na", 0.3),
     ]},
     {"name": "м'ята перечна", "has_pit_variants": False, "compounds": [
         _m("ментол", "fresh", "na", 1.0), _m("лімонен", "fresh", "na", 0.3),
@@ -250,32 +279,54 @@ MATERIALS = [
     {"name": "лавровий лист", "has_pit_variants": False, "compounds": [
         _m("цинеол (евкаліптол)", "dry", "na", 1.0), _m("евгенол", "dry", "na", 0.5),
         _m("β-фелландрен", "dry", "na", 0.5),
+        # свіжий лист — яскравіший, трохи гіркіший
+        _m("цинеол (евкаліптол)", "fresh", "na", 1.1), _m("евгенол", "fresh", "na", 0.4),
     ]},
     {"name": "мирт", "has_pit_variants": False, "compounds": [
         _m("камфора", "dry", "na", 0.7), _m("α-пінен", "dry", "na", 0.6),
         _m("флавоноїди", "dry", "na", 0.4),
+        _m("камфора", "fresh", "na", 0.6), _m("α-пінен", "fresh", "na", 0.5),
     ]},
     {"name": "лимонний мирт", "has_pit_variants": False, "compounds": [
         _m("цитраль", "dry", "na", 1.3), _m("мірцен", "dry", "na", 0.5),
         _m("ліналоол", "dry", "na", 0.4),
+        _m("цитраль", "fresh", "na", 1.1), _m("мірцен", "fresh", "na", 0.4),
     ]},
     {"name": "листя горіха", "has_pit_variants": False, "compounds": [
-        _m("юглон", "dry", "na", 1.0),
+        _m("юглон", "dry", "na", 1.0), _m("юглон", "fresh", "na", 0.8),
     ]},
 
     # --- Квіти ---
     {"name": "троянда чайна", "has_pit_variants": False, "compounds": [
+        # пелюстки свіжі
         _m("гераніол", "fresh", "na", 1.0), _m("ліналоол", "fresh", "na", 0.7),
         _m("фарнезол", "fresh", "na", 0.5),
+        # пелюстки сухі
+        _m("гераніол", "dry", "na", 0.8), _m("фарнезол", "dry", "na", 0.4),
+        # трояндова олія — концентрат
+        _m("гераніол", "oil", "na", 1.4), _m("ліналоол", "oil", "na", 0.8),
+        _m("фарнезол", "oil", "na", 0.7),
     ]},
     {"name": "бузина чорна", "has_pit_variants": False, "compounds": [
-        _m("ліналоол", "fresh", "na", 0.8), _m("фарнезол", "fresh", "na", 0.6),
+        # квіти — квітково-медовий аромат, майже без смаку
+        _m("ліналоол", "fresh", "na", 0.8, part="flower"),
+        _m("фарнезол", "fresh", "na", 0.6, part="flower"),
+        _m("ліналоол", "dry", "na", 0.6, part="flower"),
+        _m("фарнезол", "dry", "na", 0.4, part="flower"),
+        # ягоди — ягідно-терпкий смак, інший профіль
+        _m("антоціани", "fresh", "na", 1.0, part="berry"),
+        _m("органічні кислоти", "fresh", "na", 0.4, part="berry"),
+        _m("антоціани", "dry", "na", 0.8, part="berry"),
+        _m("антоціани", "extract", "na", 1.2, part="berry"),
+        _m("органічні кислоти", "extract", "na", 0.3, part="berry"),
     ]},
     {"name": "липа", "has_pit_variants": False, "compounds": [
         _m("фарнезол", "dry", "na", 0.9), _m("ліналоол", "dry", "na", 0.5),
+        _m("фарнезол", "fresh", "na", 0.8), _m("ліналоол", "fresh", "na", 0.5),
     ]},
     {"name": "акація біла", "has_pit_variants": False, "compounds": [
         _m("ліналоол", "fresh", "na", 0.9), _m("α-терпінеол", "fresh", "na", 0.6),
+        _m("ліналоол", "dry", "na", 0.7), _m("α-терпінеол", "dry", "na", 0.4),
     ]},
     {"name": "шафран", "has_pit_variants": False, "compounds": [
         _m("сафраналь", "dry", "na", 1.0), _m("пікрокроцин", "dry", "na", 0.7),
@@ -308,7 +359,12 @@ MATERIALS = [
         _m("анетол", "dry", "na", 1.2),
     ]},
     {"name": "фенхель", "has_pit_variants": False, "compounds": [
-        _m("анетол", "dry", "na", 1.0), _m("естрагол", "dry", "na", 0.5),
+        # насіння — солодко-анісовий
+        _m("анетол", "dry", "na", 1.0, part="seed"),
+        _m("естрагол", "dry", "na", 0.5, part="seed"),
+        # зелень свіжа — легший анісово-трав'яний
+        _m("анетол", "fresh", "na", 0.6, part="herb"),
+        _m("гексенал", "fresh", "na", 0.4, part="herb"),
     ]},
     {"name": "бадьян", "has_pit_variants": False, "compounds": [
         _m("анетол", "dry", "na", 1.3),
@@ -320,14 +376,28 @@ MATERIALS = [
         _m("цинеол (евкаліптол)", "dry", "na", 0.9), _m("ліналоол", "dry", "na", 0.5),
     ]},
     {"name": "коріандр", "has_pit_variants": False, "compounds": [
-        _m("ліналоол", "dry", "na", 1.0),
+        # насіння — теплий пряно-цитрусовий тон
+        _m("ліналоол", "dry", "na", 1.0, part="seed"),
+        _m("ліналоол", "extract", "na", 1.2, part="seed"),
+        # зелень (кінза) свіжа — трав'яно-свіжий аромат
+        _m("гексенал", "fresh", "na", 0.9, part="herb"),
+        _m("ліналоол", "fresh", "na", 0.4, part="herb"),
     ]},
     {"name": "тмин", "has_pit_variants": False, "compounds": [
-        _m("карвон", "dry", "na", 1.0), _m("лімонен", "dry", "na", 0.5),
+        _m("карвон", "dry", "na", 1.0, part="seed"),
+        _m("лімонен", "dry", "na", 0.5, part="seed"),
     ]},
     {"name": "кріп", "has_pit_variants": False, "compounds": [
-        _m("карвон", "dry", "na", 0.9), _m("лімонен", "dry", "na", 0.5),
-        _m("карвон", "fresh", "na", 0.7),
+        # зелень свіжа — м'який трав'яно-пряний аромат
+        _m("гексенал", "fresh", "na", 0.7, part="herb"),
+        _m("карвон", "fresh", "na", 0.6, part="herb"),
+        _m("лімонен", "fresh", "na", 0.3, part="herb"),
+        # зелень суха
+        _m("карвон", "dry", "na", 0.7, part="herb"),
+        _m("лімонен", "dry", "na", 0.4, part="herb"),
+        # насіння — концентрований карвон
+        _m("карвон", "dry", "na", 1.1, part="seed"),
+        _m("лімонен", "dry", "na", 0.6, part="seed"),
     ]},
     {"name": "ялівець", "has_pit_variants": False, "compounds": [
         _m("α-пінен", "dry", "na", 1.0), _m("мірцен", "dry", "na", 0.6),
@@ -350,24 +420,85 @@ MATERIALS = [
         _m("капсаїцин", "dry", "na", 1.0), _m("капсаїцин", "fresh", "na", 0.6),
     ]},
 
-    # --- Цитрусові ---
-    {"name": "цедра лимона", "has_pit_variants": False, "compounds": [
-        _m("лімонен", "fresh", "na", 1.3), _m("цитраль", "fresh", "na", 0.8),
-        _m("гераніол", "fresh", "na", 0.4), _m("лімонен", "dry", "na", 1.0),
+    # --- Цитрусові (цедра / сік / олія мають різні профілі) ---
+    {"name": "лимон", "has_pit_variants": False, "compounds": [
+        # цедра свіжа — яскравий лимонний аромат
+        _m("лімонен", "fresh", "na", 1.3, part="zest"),
+        _m("цитраль", "fresh", "na", 0.8, part="zest"),
+        _m("гераніол", "fresh", "na", 0.4, part="zest"),
+        # цедра суха
+        _m("лімонен", "dry", "na", 1.0, part="zest"),
+        _m("цитраль", "dry", "na", 0.5, part="zest"),
+        # лимонна ефірна олія — концентрат
+        _m("лімонен", "oil", "na", 1.6, part="zest"),
+        _m("цитраль", "oil", "na", 0.9, part="zest"),
+        # сік — виразно кислий, легкий цитрус
+        _m("органічні кислоти", "juice", "na", 1.0, part="fruit"),
+        _m("лімонен", "juice", "na", 0.3, part="fruit"),
+        # екстракт плоду
+        _m("лімонен", "extract", "na", 1.0, part="fruit"),
+        _m("органічні кислоти", "extract", "na", 0.6, part="fruit"),
+        _m("цитраль", "extract", "na", 0.4, part="fruit"),
     ]},
-    {"name": "цедра апельсина", "has_pit_variants": False, "compounds": [
-        _m("лімонен", "fresh", "na", 1.3), _m("ліналоол", "fresh", "na", 0.5),
-        _m("лімонен", "dry", "na", 1.0),
+    {"name": "апельсин", "has_pit_variants": False, "compounds": [
+        # квіти (нероліва олія) — квітковий аромат
+        _m("ліналоол", "oil", "na", 1.0, part="flower"),
+        _m("гераніол", "oil", "na", 0.6, part="flower"),
+        _m("фарнезол", "oil", "na", 0.4, part="flower"),
+        # цедра свіжа — яскравий цитрус
+        _m("лімонен", "fresh", "na", 1.3, part="zest"),
+        _m("ліналоол", "fresh", "na", 0.5, part="zest"),
+        _m("цитраль", "fresh", "na", 0.4, part="zest"),
+        # цедра суха — приглушеніший цитрус
+        _m("лімонен", "dry", "na", 1.0, part="zest"),
+        _m("ліналоол", "dry", "na", 0.3, part="zest"),
+        # апельсинова ефірна олія — концентрований цитрус
+        _m("лімонен", "oil", "na", 1.6, part="zest"),
+        _m("ліналоол", "oil", "na", 0.5, part="zest"),
+        # сік — кисло-фруктовий смак, слабкий аромат
+        _m("органічні кислоти", "juice", "na", 0.8, part="fruit"),
+        _m("гераніол", "juice", "na", 0.4, part="fruit"),
+        _m("лімонен", "juice", "na", 0.3, part="fruit"),
+        # екстракт цілого плоду
+        _m("лімонен", "extract", "na", 1.0, part="fruit"),
+        _m("органічні кислоти", "extract", "na", 0.5, part="fruit"),
+        _m("ліналоол", "extract", "na", 0.4, part="fruit"),
     ]},
     {"name": "лайм", "has_pit_variants": False, "compounds": [
-        _m("лімонен", "fresh", "na", 1.2), _m("цитраль", "fresh", "na", 0.7),
-        _m("органічні кислоти", "fresh", "na", 0.6),
+        # цедра свіжа
+        _m("лімонен", "fresh", "na", 1.2, part="zest"),
+        _m("цитраль", "fresh", "na", 0.7, part="zest"),
+        # цедра суха
+        _m("лімонен", "dry", "na", 0.9, part="zest"),
+        # цедрова олія
+        _m("лімонен", "oil", "na", 1.5, part="zest"),
+        _m("цитраль", "oil", "na", 0.8, part="zest"),
+        # сік — кислий
+        _m("органічні кислоти", "juice", "na", 1.0, part="fruit"),
+        _m("лімонен", "juice", "na", 0.3, part="fruit"),
     ]},
-    {"name": "грейпфрут (цедра)", "has_pit_variants": False, "compounds": [
-        _m("лімонен", "fresh", "na", 1.1), _m("флавоноїди", "fresh", "na", 0.6),
+    {"name": "грейпфрут", "has_pit_variants": False, "compounds": [
+        # цедра свіжа — цитрус + гірчинка
+        _m("лімонен", "fresh", "na", 1.1, part="zest"),
+        _m("флавоноїди", "fresh", "na", 0.6, part="zest"),
+        # цедра суха
+        _m("лімонен", "dry", "na", 0.9, part="zest"),
+        _m("флавоноїди", "dry", "na", 0.5, part="zest"),
+        # сік — кисло-гіркуватий
+        _m("органічні кислоти", "juice", "na", 0.8, part="fruit"),
+        _m("флавоноїди", "juice", "na", 0.5, part="fruit"),
+        _m("лімонен", "juice", "na", 0.3, part="fruit"),
     ]},
-    {"name": "мандарин (цедра)", "has_pit_variants": False, "compounds": [
-        _m("лімонен", "fresh", "na", 1.0), _m("ліналоол", "fresh", "na", 0.4),
+    {"name": "мандарин", "has_pit_variants": False, "compounds": [
+        # цедра свіжа — м'який солодкий цитрус
+        _m("лімонен", "fresh", "na", 1.0, part="zest"),
+        _m("ліналоол", "fresh", "na", 0.4, part="zest"),
+        # цедра суха
+        _m("лімонен", "dry", "na", 0.8, part="zest"),
+        # сік — м'який кисло-солодкий
+        _m("органічні кислоти", "juice", "na", 0.6, part="fruit"),
+        _m("гераніол", "juice", "na", 0.3, part="fruit"),
+        _m("лімонен", "juice", "na", 0.3, part="fruit"),
     ]},
 
     # --- Біостимулятори / інше ---
@@ -386,13 +517,31 @@ MATERIALS = [
         _m("антоціани", "dry", "without", 0.8), _m("антоціани", "extract", "na", 1.2),
     ]},
     {"name": "вишня", "has_pit_variants": True, "compounds": [
+        # свіжа без кісточки — ягідно-кисла
         _m("антоціани", "fresh", "without", 0.9), _m("бензальдегід", "fresh", "without", 0.2),
+        _m("органічні кислоти", "fresh", "without", 0.4),
+        # свіжа з кісточкою — мигдально-вишневий тон
         _m("бензальдегід", "fresh", "with", 0.9), _m("амигдалін", "fresh", "with", 0.6),
-        _m("антоціани", "fresh", "with", 0.7), _m("антоціани", "dry", "without", 0.6),
+        _m("антоціани", "fresh", "with", 0.7),
+        # сушена вишня — концентрована ягода
+        _m("антоціани", "dry", "without", 0.6), _m("бензальдегід", "dry", "without", 0.3),
+        # екстракт / настоянка
+        _m("антоціани", "extract", "na", 1.0), _m("бензальдегід", "extract", "na", 0.4),
     ]},
     {"name": "абрикос", "has_pit_variants": True, "compounds": [
+        # свіжий без кісточки — кисло-фруктовий
         _m("органічні кислоти", "fresh", "without", 0.6), _m("лімонен", "fresh", "without", 0.2),
+        _m("гераніол", "fresh", "without", 0.3),
+        # свіжий з кісточкою — мигдальний тон ядра
         _m("амигдалін", "fresh", "with", 0.7), _m("бензальдегід", "fresh", "with", 0.8),
+        # курага (сушений, без кісточки) — солодко-фруктова, м'якша кислота
+        _m("гераніол", "dry", "without", 0.4), _m("органічні кислоти", "dry", "without", 0.4),
+        _m("бензальдегід", "dry", "without", 0.2),
+        # курага з кісточкою — більше мигдалю
+        _m("бензальдегід", "dry", "with", 0.6), _m("амигдалін", "dry", "with", 0.5),
+        # екстракт плоду
+        _m("гераніол", "extract", "na", 0.5), _m("органічні кислоти", "extract", "na", 0.5),
+        _m("бензальдегід", "extract", "na", 0.3),
     ]},
 ]
 
@@ -476,6 +625,7 @@ def load_data(data: Dict) -> None:
                     select(MaterialCompound).where(
                         MaterialCompound.raw_material_id == mat.id,
                         MaterialCompound.compound_id == comp.id,
+                        MaterialCompound.part == link.get("part", "whole"),
                         MaterialCompound.form == link.get("form", "fresh"),
                         MaterialCompound.pit == link.get("pit", "na"),
                     )
@@ -485,6 +635,7 @@ def load_data(data: Dict) -> None:
                         MaterialCompound(
                             raw_material_id=mat.id,
                             compound_id=comp.id,
+                            part=link.get("part", "whole"),
                             form=link.get("form", "fresh"),
                             pit=link.get("pit", "na"),
                             intensity=float(link.get("intensity", 1.0)),

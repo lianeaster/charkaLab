@@ -110,8 +110,13 @@ export default function MaterialAutocomplete({ value, onChange, placeholder }) {
                   onClick={() => selectMaterial(m)}
                 >
                   {m.name}
+                  {m.aliases && m.aliases.length > 0 && (
+                    <span className="ml-2 text-xs text-stone-400">
+                      ({m.aliases.join(", ")})
+                    </span>
+                  )}
                   {m.has_pit_variants && (
-                    <span className="ml-2 text-xs text-stone-400">(є кісточка)</span>
+                    <span className="ml-2 text-xs text-stone-400">· є кісточка</span>
                   )}
                 </button>
               </li>

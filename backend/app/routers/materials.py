@@ -19,21 +19,36 @@ def suggest(
     limit: int = Query(10, ge=1, le=25),
     db: Session = Depends(get_db),
 ):
-    stmt = select(RawMaterial)
     query = q.strip()
-    if query:
-        # збіг по початку слова, далі будь-яке входження
-        stmt = stmt.where(RawMaterial.name.ilike(f"{query}%"))
-    rows = db.scalars(stmt.order_by(RawMaterial.name).limit(limit)).all()
-    if query and not rows:
+    if not query:
+        rows = db.scalars(
+            select(RawMaterial).order_by(RawMaterial.name).limit(limit)
+        ).all()
+    else:
+        # 1) збіг по початку назви; 2) входження в назву або синоніми
         rows = db.scalars(
             select(RawMaterial)
-            .where(RawMaterial.name.ilike(f"%{query}%"))
+            .where(RawMaterial.name.ilike(f"{query}%"))
             .order_by(RawMaterial.name)
             .limit(limit)
         ).all()
+        if not rows:
+            rows = db.scalars(
+                select(RawMaterial)
+                .where(
+                    RawMaterial.name.ilike(f"%{query}%")
+                    | RawMaterial.aliases.ilike(f"%{query}%")
+                )
+                .order_by(RawMaterial.name)
+                .limit(limit)
+            ).all()
     return [
-        MaterialSuggestion(id=r.id, name=r.name, has_pit_variants=r.has_pit_variants)
+        MaterialSuggestion(
+            id=r.id,
+            name=r.name,
+            has_pit_variants=r.has_pit_variants,
+            aliases=[a for a in (r.aliases or "").split(",") if a],
+        )
         for r in rows
     ]
 

@@ -9,6 +9,7 @@ class MaterialSuggestion(BaseModel):
     id: int
     name: str
     has_pit_variants: bool
+    aliases: List[str] = Field(default_factory=list)
 
 
 class FormOption(BaseModel):

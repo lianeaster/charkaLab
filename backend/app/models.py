@@ -56,6 +56,8 @@ class RawMaterial(Base):
     name: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     # чи має сировина варіанти "з кісточкою / без кісточки"
     has_pit_variants: Mapped[bool] = mapped_column(default=False)
+    # синоніми для пошуку (напр. сушена назва): "чорнослив,слива сушена"
+    aliases: Mapped[str] = mapped_column(String(255), default="")
 
     compounds: Mapped[List["MaterialCompound"]] = relationship(
         back_populates="raw_material", cascade="all, delete-orphan"

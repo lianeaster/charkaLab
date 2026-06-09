@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# charkaLab
+node_modules/
+frontend/dist/
+backend/*.db
+

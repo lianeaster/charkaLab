@@ -49,6 +49,13 @@ from ..schemas import (
 MAX_VARIANTS = 4
 MAX_SUGGESTED = 3
 MIN_INGREDIENTS = 4
+# Пошук РІЗНОМАНІТНИХ композицій: показуємо кілька рецептів із різними
+# інгредієнтами, а не майже однакові. Після кожного прийнятого варіанта його
+# додані інгредієнти «банимо», щоб наступний будувався з інших — або взагалі не
+# знайшовся (тоді чесно показуємо менше варіантів).
+DIVERSE_ATTEMPTS = 6       # скільки різних наборів додатків пробуємо
+SCORE_DELTA = 0.1          # лишаємо варіанти в межах цього від найкращого збігу
+MIN_VARIANT_DIFF = 2       # мін. різниця у наборі доданих інгредієнтів між варіантами
 # Стеля кількості ароматичних складових (без підсолоджувача): дозволяє додавати
 # більше інгредієнтів, щоб краще «вписатися» в профіль.
 MAX_INGREDIENTS = 7
@@ -677,10 +684,19 @@ def _find_candidates(
     return candidates
 
 
+# Кеш розкладок сировини на час життя процесу: дані сидяться один раз при старті
+# і не змінюються, тож розкладку кожної сировини рахуємо лише раз. Це критично
+# для швидкості пошуку різноманітних композицій (багато повторних звернень).
+_BREAKDOWN_CACHE: Dict[int, Dict[Tuple[str, str, str], Dict[str, float]]] = {}
+
+
 def _option_breakdown(
     db: Session, material_id: int
 ) -> Dict[Tuple[str, str, str], Dict[str, float]]:
     """Для кожної (part, form, pit) — внески за каналами: aroma_*, taste_*."""
+    cached = _BREAKDOWN_CACHE.get(material_id)
+    if cached is not None:
+        return cached
     rows = db.scalars(
         select(MaterialCompound).where(
             MaterialCompound.raw_material_id == material_id
@@ -700,6 +716,7 @@ def _option_breakdown(
                 out[key][f"aroma::{char_name}"] += val
             if compound.kind in (KIND_TASTE, KIND_BOTH):
                 out[key][f"taste::{char_name}"] += val
+    _BREAKDOWN_CACHE[material_id] = out
     return out
 
 
@@ -1381,6 +1398,67 @@ def _base_influence(
     )
 
 
+def _greedy_seed(
+    db: Session,
+    chosen: List[ResolvedSelection],
+    base_missing: Set[str],
+    exclude: Set[int],
+    desired_set: Set[str],
+    max_suggested: int,
+) -> List[ResolvedSelection]:
+    """Заготовка: обрана сировина + закриття прогалин профілю чистими кандидатами
+    (поза `exclude`). `exclude` містить уже використане/заборонене/«забанене»."""
+    seed = list(chosen)
+    if not base_missing:
+        return seed
+    candidates = _find_candidates(db, base_missing, exclude, desired_set)
+    still = set(base_missing)
+    used = set(exclude)
+    added = 0
+    for mid, part, form, pit, _val, covered in candidates:
+        if not (covered & still):
+            continue
+        chans = _option_breakdown(db, mid).get((part, form, pit), {})
+        if _overpowers(chans, desired_set):
+            continue
+        seed.append(
+            ResolvedSelection(mid, _resolve_name(db, mid), part, form, pit, "suggested")
+        )
+        used.add(mid)
+        still -= covered
+        added += 1
+        if not still or added >= max_suggested:
+            break
+    return seed
+
+
+def _addition_ids(
+    selections: List[ResolvedSelection], base_exclude: Set[int]
+) -> Set[int]:
+    """ID інгредієнтів, ДОДАНИХ алгоритмом (підбір/гармонія/база) — без обраної
+    сировини, основи та підсолоджувача. Це «підпис» композиції для діверсифікації."""
+    return {
+        s.material_id
+        for s in selections
+        if s.material_id > 0
+        and s.material_id not in base_exclude
+        and s.role in ("suggested", "harmony", "base")
+    }
+
+
+def _variant_title(
+    db: Session, added: Set[int], other_added: List[Set[int]]
+) -> str:
+    """Назва за відмітними інгредієнтами варіанта (унікальними щодо інших)."""
+    if not added:
+        return "Лаконічна композиція (основна сировина)"
+    others = set().union(*other_added) if other_added else set()
+    unique = added - others
+    pick = sorted(unique) if unique else sorted(added)
+    names = [_resolve_name(db, i) for i in pick[:2]]
+    return "Композиція з: " + ", ".join(names)
+
+
 def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
     desired_rows = db.scalars(
         select(Characteristic).where(Characteristic.id.in_(req.desired_characteristics))
@@ -1474,88 +1552,81 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
     # Мед не пропонуємо як звичайну сировину — він заходить лише як підсолоджувач
     # (медові ноти + солодкість) у кроці балансування, щоб не дублювався.
     honey_id = _honey_id(db)
-    auto_exclude = exclude_ids | ({honey_id} if honey_id else set()) | forbidden_ids
-    candidates = (
-        _find_candidates(db, base_missing, auto_exclude, desired_set)
-        if base_missing
-        else []
-    )
+    base_block = exclude_ids | ({honey_id} if honey_id else set()) | forbidden_ids
 
-    # Жадібна заготовка: обрана сировина + закриття прогалин профілю кандидатами.
-    greedy = list(chosen)
-    still_missing = set(base_missing)
-    used: Set[int] = set(exclude_ids)
-    for mid, part, form, pit, _val, covered in candidates:
-        if not (covered & still_missing):
-            continue
-        cand_chans = _option_breakdown(db, mid).get((part, form, pit), {})
-        if _overpowers(cand_chans, desired_set):
-            continue  # перебивав би профіль — шукаємо чистішого кандидата
-        greedy.append(
-            ResolvedSelection(mid, _resolve_name(db, mid), part, form, pit, "suggested")
+    # Збираємо ПУЛ кандидатних композицій. Кожна ітерація будує заготовку з
+    # кандидатів, фіналізує її (підсилення/баланс), потім «банить» свої додані
+    # інгредієнти — щоб наступна композиція складалася з інших. Так отримуємо
+    # справді різні рецепти, а не майже однакові.
+    pool: List[Tuple[List[ResolvedSelection], List[str], Set[int]]] = []
+    banned: Set[int] = set()
+    for _ in range(DIVERSE_ATTEMPTS):
+        seed = _greedy_seed(
+            db, chosen, base_missing, base_block | banned, desired_set, MAX_SUGGESTED
         )
-        used.add(mid)
-        still_missing -= covered
-        if not still_missing or len(used) - len(exclude_ids) >= MAX_SUGGESTED:
-            break
+        sel, notes = _finalize(
+            db, seed, desired_set,
+            max_ingredients=MAX_INGREDIENTS, sweetener="auto",
+            base_conflict_chars=base_conflict_chars,
+            forbidden_ids=forbidden_ids | banned,
+        )
+        added = _addition_ids(sel, exclude_ids)
+        pool.append((sel, notes, added))
+        if not added:
+            break  # нічого не додано — інших комбінацій під цей профіль нема
+        banned |= added
 
-    # Три ГЕНЕТИЧНО різні стратегії композиції замість збіжних «альтернатив»:
-    variants: List[RecipeVariant] = []
-
-    # A) Повна композиція під профіль — багата, до MAX_INGREDIENTS, авто-баланс.
-    full_sel, full_notes = _finalize(
-        db, list(greedy), desired_set,
-        max_ingredients=MAX_INGREDIENTS, sweetener="auto",
-        base_conflict_chars=base_conflict_chars,
-        forbidden_ids=forbidden_ids,
-    )
-    variants.append(
-        _make_variant(db, "Повна композиція під профіль", full_sel, desired_names, full_notes)
-    )
-
-    # Який підсолоджувач узяла повна композиція — для альтернативи беремо інший.
-    full_sweet = next((s.name for s in full_sel if s.role == "sweetener"), None)
-
-    # B) Лаконічна композиція — лише обрана сировина + мінімум для покриття/балансу.
+    # Лаконічна композиція (лише обрана сировина + мінімум) — окремий стиль.
     lean_sel, lean_notes = _finalize(
         db, list(chosen), desired_set,
         max_ingredients=MIN_INGREDIENTS, sweetener="auto",
         base_conflict_chars=base_conflict_chars,
         forbidden_ids=forbidden_ids,
     )
-    variants.append(
-        _make_variant(
-            db, "Лаконічна композиція (мінімум складових)", lean_sel, desired_names, lean_notes
-        )
-    )
+    pool.append((lean_sel, lean_notes, _addition_ids(lean_sel, exclude_ids)))
 
-    # C) З альтернативним підсолоджувачем — та сама база, але мед↔цукор.
-    if full_sweet is not None:
-        alt = "sugar" if full_sweet == HONEY_NAME else "honey"
-        alt_label = SUGAR_NAME if alt == "sugar" else HONEY_NAME
-        alt_sel, alt_notes = _finalize(
-            db, list(greedy), desired_set,
-            max_ingredients=MAX_INGREDIENTS, sweetener=alt,
-            base_conflict_chars=base_conflict_chars,
-            forbidden_ids=forbidden_ids,
-        )
-        variants.append(
-            _make_variant(
-                db, f"Варіант із підсолоджувачем: {alt_label}", alt_sel, desired_names, alt_notes
-            )
-        )
+    # Оцінюємо весь пул і відбираємо найкращі ГЕНЕТИЧНО різні варіанти в межах
+    # SCORE_DELTA від найкращого збігу.
+    scored: List[Tuple[RecipeVariant, Set[int], Tuple]] = []
+    for sel, notes, added in pool:
+        v = _make_variant(db, "", sel, desired_names, notes)
+        sig = tuple(sorted((m.material_id, m.part, m.form, m.pit) for m in v.materials))
+        scored.append((v, added, sig))
+    scored.sort(key=lambda t: _overall(t[0]), reverse=True)
 
-    # дедуплікація за набором матеріалів + сортування за загальною оцінкою
-    seen: Set[Tuple] = set()
+    best_match = scored[0][0].match_score if scored else 0.0
     unique: List[RecipeVariant] = []
-    for v in sorted(variants, key=_overall, reverse=True):
-        key = tuple(sorted((m.material_id, m.part, m.form, m.pit) for m in v.materials))
-        if key in seen:
+    kept_added: List[Set[int]] = []
+    seen_sig: Set[Tuple] = set()
+    for v, added, sig in scored:
+        if sig in seen_sig:
             continue
-        seen.add(key)
+        if v.match_score < best_match - SCORE_DELTA:
+            continue
+        # достатньо відрізняється від уже відібраних за набором додатків?
+        if any(len(added ^ k) < MIN_VARIANT_DIFF for k in kept_added):
+            continue
+        v.title = _variant_title(db, added, kept_added)
+        seen_sig.add(sig)
+        kept_added.append(added)
         unique.append(v)
         if len(unique) >= MAX_VARIANTS:
             break
+
+    # Підстраховка: якщо фільтр різноманітності лишив єдиний варіант, додамо
+    # найкращий відмінний за складом (хай і поза SCORE_DELTA), щоб було з чого обирати.
+    if len(unique) < 2:
+        for v, added, sig in scored:
+            if sig in seen_sig:
+                continue
+            if any(len(added ^ k) < MIN_VARIANT_DIFF for k in kept_added):
+                continue
+            v.title = _variant_title(db, added, kept_added)
+            seen_sig.add(sig)
+            kept_added.append(added)
+            unique.append(v)
+            if len(unique) >= 2:
+                break
 
     feasibility = _feasibility(db, chosen, desired_names, unique, forbidden_ids)
     base_infl = _base_influence(

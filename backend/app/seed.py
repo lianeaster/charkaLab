@@ -1091,6 +1091,49 @@ MATERIALS = [
     ]},
 ]
 
+# Теги-протипоказання для фільтрів цільової аудиторії.
+#   pregnancy_unsafe — не рекомендовано при вагітності/годуванні (туйон, естрагол,
+#                      міристицин, гліциризин, кумарин, хінін, емменагоги тощо)
+#   kids_unsafe      — гостре/гірко-лікарське/нейроактивне, не для дітей
+#   caffeine         — містить кофеїн/теобромін
+# Решта сировини тегів не має (дозволена всім).
+MATERIAL_TAGS: Dict[str, list] = {
+    # кофеїн / теобромін
+    "кава": ["caffeine", "kids_unsafe"],
+    "какао боби": ["caffeine"],
+    "зелений чай": ["caffeine"],
+    # туйон / нейроактивні ефірні олії
+    "полин": ["pregnancy_unsafe", "kids_unsafe"],
+    "шавлія": ["pregnancy_unsafe"],
+    "естрагон": ["pregnancy_unsafe"],
+    "іссоп": ["pregnancy_unsafe"],
+    "аїр болотний": ["pregnancy_unsafe", "kids_unsafe"],
+    # міристицин
+    "мускатний горіх": ["pregnancy_unsafe"],
+    "мускатний цвіт (мацис)": ["pregnancy_unsafe"],
+    # гліциризин / кумарин / антикоагулянти
+    "солодка (лакриця)": ["pregnancy_unsafe"],
+    "боби тонка": ["pregnancy_unsafe", "kids_unsafe"],
+    "донник": ["pregnancy_unsafe"],
+    "зубровка": ["pregnancy_unsafe"],
+    "кассія (китайська кориця)": ["pregnancy_unsafe"],
+    # хінін / сильні гіркі емменагоги
+    "хінна кора": ["pregnancy_unsafe", "kids_unsafe"],
+    "горечавка жовта (тирлич)": ["pregnancy_unsafe", "kids_unsafe"],
+    "девясил": ["pregnancy_unsafe"],
+    # традиційні емменагоги / маткові стимулятори
+    "ялівець": ["pregnancy_unsafe"],
+    "розмарин": ["pregnancy_unsafe"],
+    "деревій": ["pregnancy_unsafe"],
+    "любисток": ["pregnancy_unsafe"],
+    "петрушка": ["pregnancy_unsafe"],
+    "звіробій": ["pregnancy_unsafe"],
+    # надмірна пекучість
+    "червоний гострий перець": ["kids_unsafe"],
+    "хрін": ["kids_unsafe"],
+}
+
+
 SEED_DATA: Dict = {
     "characteristics": CHARACTERISTICS,
     "bases": [
@@ -1104,6 +1147,7 @@ SEED_DATA: Dict = {
     ],
     "compounds": COMPOUNDS,
     "materials": MATERIALS,
+    "material_tags": MATERIAL_TAGS,
 }
 
 
@@ -1158,16 +1202,21 @@ def load_data(data: Dict) -> None:
                         )
                     )
 
+        material_tags: Dict = data.get("material_tags", {})
         for m in data.get("materials", []):
             mat = db.scalar(select(RawMaterial).where(RawMaterial.name == m["name"]))
+            tags = ",".join(material_tags.get(m["name"], []))
             if mat is None:
                 mat = RawMaterial(
                     name=m["name"],
                     has_pit_variants=bool(m.get("has_pit_variants", False)),
                     aliases=",".join(m.get("aliases", [])),
+                    tags=tags,
                 )
                 db.add(mat)
                 db.flush()
+            elif tags and not mat.tags:
+                mat.tags = tags
             for link in m.get("compounds", []):
                 comp = comp_by_name.get(link["compound"])
                 if comp is None:

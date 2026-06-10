@@ -66,6 +66,9 @@ class RawMaterial(Base):
     has_pit_variants: Mapped[bool] = mapped_column(default=False)
     # синоніми для пошуку (напр. сушена назва): "чорнослив,слива сушена"
     aliases: Mapped[str] = mapped_column(String(255), default="")
+    # теги-протипоказання для фільтрів цільової аудиторії, через кому:
+    # "pregnancy_unsafe,kids_unsafe,caffeine" (див. seed.MATERIAL_TAGS)
+    tags: Mapped[str] = mapped_column(String(255), default="")
 
     compounds: Mapped[List["MaterialCompound"]] = relationship(
         back_populates="raw_material", cascade="all, delete-orphan"

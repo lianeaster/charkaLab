@@ -2,7 +2,7 @@ import MaterialAutocomplete from "./MaterialAutocomplete";
 
 const MAX_ROWS = 10;
 
-export default function AdditionalMaterials({ rows, onChange }) {
+export default function AdditionalMaterials({ rows, onChange, forbiddenTags }) {
   function addRow() {
     if (rows.length >= MAX_ROWS) return;
     onChange([...rows, { material_id: null, name: "", form: "fresh", pit: "na" }]);
@@ -27,6 +27,7 @@ export default function AdditionalMaterials({ rows, onChange }) {
               value={row}
               onChange={(v) => updateRow(i, v)}
               placeholder={`Додаткова сировина #${i + 1}`}
+              forbiddenTags={forbiddenTags}
             />
           </div>
           <button

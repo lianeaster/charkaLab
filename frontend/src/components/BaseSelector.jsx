@@ -1,9 +1,26 @@
+import { NON_ALCOHOLIC_BASES } from "../api";
+
 const DISTILLATE_KEY = "ароматний дистилят (основна сировина)";
 
-export default function BaseSelector({ bases, value, onChange, mainMaterialName }) {
+export default function BaseSelector({
+  bases,
+  value,
+  onChange,
+  mainMaterialName,
+  alcoholFree,
+}) {
+  const visible = alcoholFree
+    ? bases.filter((b) => NON_ALCOHOLIC_BASES.has(b.name))
+    : bases;
   return (
-    <div className="flex flex-wrap gap-2">
-      {bases.map((b) => {
+    <div className="flex flex-col gap-2">
+      {alcoholFree && (
+        <p className="text-xs text-stone-500">
+          Для цієї категорії доступні лише безалкогольні основи (0%).
+        </p>
+      )}
+      <div className="flex flex-wrap gap-2">
+      {visible.map((b) => {
         const isDistillate = b.name === DISTILLATE_KEY;
         const active = value === b.id;
         const label = isDistillate && mainMaterialName
@@ -29,6 +46,7 @@ export default function BaseSelector({ bases, value, onChange, mainMaterialName 
           </button>
         );
       })}
+      </div>
     </div>
   );
 }

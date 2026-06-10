@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .database import Base, engine
-from .routers import materials, meta, recipes
+from .routers import audiences, materials, meta, recipes
 from .seed import seed_if_empty
 
 app = FastAPI(title="charkaLab API", version="0.1.0")
@@ -25,6 +25,7 @@ def on_startup() -> None:
 app.include_router(materials.router)
 app.include_router(meta.router)
 app.include_router(recipes.router)
+app.include_router(audiences.router)
 
 
 @app.get("/health")

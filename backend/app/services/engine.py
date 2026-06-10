@@ -31,7 +31,9 @@ from ..models import (
     VOL_HEART,
     VOL_TOP,
 )
+from ..audiences import get_audience
 from ..schemas import (
+    AudienceInfo,
     BaseInfluence,
     CharacteristicScore,
     CompoundContribution,
@@ -41,6 +43,7 @@ from ..schemas import (
     PyramidLayer,
     ProfileFeasibility,
     RecipeVariant,
+    SuggestProfileResponse,
 )
 
 MAX_VARIANTS = 4
@@ -57,6 +60,12 @@ TARGET_STRENGTH = 0.8
 # ноту вважаємо недосяжною й припиняємо марні додавання.
 MIN_REINFORCE = 0.3
 MAX_BALANCE_STEPS = 3
+
+# Поріг, з якого бажана нота вважається реально присутньою (а не слідовою):
+# нижче COVERED_MIN — нота «не покрита»; між COVERED_MIN і WEAK_CEIL — «слабка»
+# (присутня, але ледь чутна — чесно позначаємо, не видаючи за повноцінну).
+COVERED_MIN = 0.25
+WEAK_CEIL = 0.5
 
 # Базові смакові осі балансу
 SWEET = "солодкий"
@@ -368,7 +377,7 @@ def _score(profile: Profile, desired_names: List[str]) -> float:
         return 0.0
     desired_set = set(desired_names)
     scores = [profile.total(name) for name in desired_names]
-    covered = sum(1 for s in scores if s > 0)
+    covered = sum(1 for s in scores if s >= COVERED_MIN)
     coverage_ratio = covered / len(desired_names)
     capped = [min(s, 1.0) for s in scores]
     strength = sum(capped) / len(capped)
@@ -429,6 +438,103 @@ def _resolve_name(db: Session, material_id: int) -> str:
 
 def _honey_id(db: Session) -> Optional[int]:
     return db.scalar(select(RawMaterial.id).where(RawMaterial.name == HONEY_NAME))
+
+
+def _forbidden_material_ids(db: Session, forbidden_tags: Set[str]) -> Set[int]:
+    """ID сировини, що має хоч один заборонений тег (жорсткий фільтр ЦА)."""
+    if not forbidden_tags:
+        return set()
+    out: Set[int] = set()
+    rows = db.execute(select(RawMaterial.id, RawMaterial.tags)).all()
+    for mid, tags in rows:
+        mat_tags = {t for t in (tags or "").split(",") if t}
+        if mat_tags & forbidden_tags:
+            out.add(mid)
+    return out
+
+
+# Смакові осі — не використовуються як «ідентичність» основної сировини при
+# доборі авто-профілю (вони покриваються базовими нотами/балансом).
+_TASTE_AXES = {SWEET, SOUR, BITTER, ASTRINGENT, PUNGENT}
+_MAX_PROFILE_NOTES = 5
+_MATERIAL_PROFILE_PICKS = 2
+
+
+def _note_reachable(
+    db: Session, char: str, main_id: int, desired_set: Set[str]
+) -> bool:
+    """Чи реально дати ноту `char` на цій основній сировині: вона сама її несе,
+    або є чистий підсилювач (не перебиває профіль), який дотягне до MIN_REINFORCE.
+
+    Солодкість завжди досяжна — її додає підсолоджувач."""
+    if char == SWEET:
+        return True
+    for chans in _option_breakdown(db, main_id).values():
+        if chans.get(f"aroma::{char}", 0.0) + chans.get(f"taste::{char}", 0.0) > 0:
+            return True
+    cand = _best_for_char(db, char, {main_id}, desired_set)
+    return cand is not None and cand[4] >= MIN_REINFORCE
+
+
+def suggest_profile(
+    db: Session,
+    audience: Dict,
+    main_material_id: Optional[int],
+    part: Optional[str] = None,
+    form: Optional[str] = None,
+    pit: Optional[str] = None,
+) -> SuggestProfileResponse:
+    """Популярний профіль під ЦА + природні ноти основної сировини.
+
+    Базові ноти категорії + топ-1–2 найвиразніші ароматичні ноти основної
+    сировини; разом не більше _MAX_PROFILE_NOTES. Базові ноти, які обрана
+    сировина не здатна дати (і нічим чистим не підсилити), не пропонуємо —
+    щоб не обіцяти профіль, який провалиться.
+
+    Якщо задано конкретний варіант (part/form/pit) — беремо ноти лише з нього,
+    щоб не пропонувати, напр., мигдальний/кісточковий «з кісточкою», коли
+    обрано «без кісточки».
+    """
+    base_notes: List[str] = list(audience.get("default_profile", []))
+    picks: List[str] = []
+    if main_material_id:
+        breakdown = _option_breakdown(db, main_material_id)
+        chosen_chans = breakdown.get((part, form, pit)) if part is not None else None
+        agg: Dict[str, float] = defaultdict(float)
+        sources = [chosen_chans] if chosen_chans else list(breakdown.values())
+        for chans in sources:
+            for key, val in chans.items():
+                chan, name = key.split("::", 1)
+                if chan == "aroma":
+                    agg[name] += val
+        ranked = sorted(agg.items(), key=lambda kv: kv[1], reverse=True)
+        for name, _v in ranked:
+            if name in _TASTE_AXES or name in base_notes:
+                continue
+            picks.append(name)
+            if len(picks) >= _MATERIAL_PROFILE_PICKS:
+                break
+
+    if main_material_id:
+        tentative = set(base_notes) | set(picks)
+        base_notes = [
+            n
+            for n in base_notes
+            if _note_reachable(db, n, main_material_id, tentative)
+        ]
+    names = (base_notes + picks)[:_MAX_PROFILE_NOTES]
+
+    id_by_name = {
+        c.name: c.id
+        for c in db.scalars(
+            select(Characteristic).where(Characteristic.name.in_(names))
+        ).all()
+    }
+    ordered = [(n, id_by_name[n]) for n in names if n in id_by_name]
+    return SuggestProfileResponse(
+        characteristic_ids=[i for _n, i in ordered],
+        characteristic_names=[n for n, _i in ordered],
+    )
 
 
 def _option_net(
@@ -719,6 +825,7 @@ def _finalize(
     max_ingredients: int = MAX_INGREDIENTS,
     sweetener: str = "auto",  # auto | honey | sugar
     base_conflict_chars: Set[str] = frozenset(),
+    forbidden_ids: Set[int] = frozenset(),
 ) -> Tuple[List[ResolvedSelection], List[str]]:
     """Дозування інгредієнтів + балансування смаку + мінімум інгредієнтів.
 
@@ -728,6 +835,9 @@ def _finalize(
     """
     notes: List[str] = []
     used: Set[int] = {s.material_id for s in selections}
+    # Жорсткий фільтр ЦА: заборонену сировину взагалі не можна додавати —
+    # позначаємо як «використану», щоб усі пошуки кандидатів її оминали.
+    used |= set(forbidden_ids)
     # Мед не підказуємо як звичайну сировину — лише як підсолоджувач, щоб уникнути
     # подвійної згадки (мед-сировина + мед-солодкість).
     honey_id = _honey_id(db)
@@ -1013,8 +1123,9 @@ def _make_variant(
     desired_set = set(desired_names)
     score = _score(profile, desired_names)
     balance = _balance_score(profile)
-    covered = [n for n in desired_names if profile.total(n) > 0]
-    missing = [n for n in desired_names if profile.total(n) <= 0]
+    covered = [n for n in desired_names if profile.total(n) >= COVERED_MIN]
+    missing = [n for n in desired_names if profile.total(n) < COVERED_MIN]
+    weak = [n for n in covered if profile.total(n) < WEAK_CEIL]
 
     compounds = [
         CompoundContribution(compound=name, kind=kind, characteristics=sorted(chars))
@@ -1044,8 +1155,12 @@ def _make_variant(
         parts.append(f"Для профілю додано: {', '.join(suggested)}.")
     if missing:
         parts.append(f"Не вистачає: {', '.join(missing)}.")
+    if weak:
+        parts.append(f"Слабко виражені: {', '.join(weak)}.")
+    # «Баланс» — це лише про рівновагу смаку (солодке/кисле/гірке), а не про
+    # відповідність профілю. Тому формулюємо явно, щоб не вводити в оману.
     if balance >= 0.85:
-        parts.append("Смак збалансований.")
+        parts.append("Смак (рівновага солодке/кисле/гірке) збалансований.")
     else:
         parts.append("Смак вимагав корекції балансу.")
     explanation = " ".join(parts)
@@ -1059,6 +1174,7 @@ def _make_variant(
         taste_profile=_profile_scores(profile, profile.taste, desired_set),
         covered=covered,
         missing=missing,
+        weak=weak,
         compounds=compounds,
         balance_notes=balance_notes,
         explanation=explanation,
@@ -1075,6 +1191,7 @@ def _feasibility(
     chosen: List[ResolvedSelection],
     desired_names: List[str],
     variants: List[RecipeVariant],
+    forbidden_ids: Set[int] = frozenset(),
 ) -> ProfileFeasibility:
     """Чи можна гарантувати бажаний профіль для обраної сировини.
 
@@ -1089,7 +1206,9 @@ def _feasibility(
 
     desired_set = set(desired_names)
     chosen_profile = _build_profile(db, chosen)
-    chosen_ids = {s.material_id for s in chosen}
+    # Заборонену сировину виключаємо з пулу досяжності — інакше ноту вважатимемо
+    # досяжною через інгредієнт, який фільтр ЦА не дозволяє.
+    chosen_ids = {s.material_id for s in chosen} | set(forbidden_ids)
 
     # 1) Досяжність кожної бажаної характеристики (обрана сировина або будь-який кандидат)
     unreachable: List[str] = []
@@ -1269,6 +1388,13 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
     desired_names = [c.name for c in desired_rows]
     desired_set = set(desired_names)
 
+    # Цільова аудиторія: жорсткі фільтри сировини + обмеження на алкоголь.
+    audience = get_audience(req.audience_id)
+    forbidden_tags: Set[str] = (
+        set(audience["forbidden_tags"]) if audience else set()
+    )
+    forbidden_ids = _forbidden_material_ids(db, forbidden_tags)
+
     base_name: Optional[str] = None
     base_conflict_chars: Set[str] = set()
     distillate_bp: Optional[Dict] = None  # динамічний профіль для дистиляту (банер)
@@ -1293,6 +1419,18 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
                     "аромосполуки; таніни та антоціани при дистиляції не переходять."
                 ),
             }
+
+    # Для безалкогольних ЦА відкидаємо алкогольну основу (спирт/вино/дистилят),
+    # навіть якщо вона якось потрапила у запит — лишається лише 0% ABV.
+    if audience and audience["alcohol_free"] and base_name:
+        is_alcoholic = base_name == DISTILLATE_BASE_NAME or (
+            BASE_PROFILES.get(base_name, {}).get("abv", 0) > 0
+        )
+        if is_alcoholic:
+            base_name = None
+            base_conflict_chars = set()
+            base_contrib = []
+            distillate_bp = None
 
     chosen: List[ResolvedSelection] = [
         ResolvedSelection(
@@ -1336,7 +1474,7 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
     # Мед не пропонуємо як звичайну сировину — він заходить лише як підсолоджувач
     # (медові ноти + солодкість) у кроці балансування, щоб не дублювався.
     honey_id = _honey_id(db)
-    auto_exclude = exclude_ids | ({honey_id} if honey_id else set())
+    auto_exclude = exclude_ids | ({honey_id} if honey_id else set()) | forbidden_ids
     candidates = (
         _find_candidates(db, base_missing, auto_exclude, desired_set)
         if base_missing
@@ -1369,6 +1507,7 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
         db, list(greedy), desired_set,
         max_ingredients=MAX_INGREDIENTS, sweetener="auto",
         base_conflict_chars=base_conflict_chars,
+        forbidden_ids=forbidden_ids,
     )
     variants.append(
         _make_variant(db, "Повна композиція під профіль", full_sel, desired_names, full_notes)
@@ -1382,6 +1521,7 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
         db, list(chosen), desired_set,
         max_ingredients=MIN_INGREDIENTS, sweetener="auto",
         base_conflict_chars=base_conflict_chars,
+        forbidden_ids=forbidden_ids,
     )
     variants.append(
         _make_variant(
@@ -1397,6 +1537,7 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
             db, list(greedy), desired_set,
             max_ingredients=MAX_INGREDIENTS, sweetener=alt,
             base_conflict_chars=base_conflict_chars,
+            forbidden_ids=forbidden_ids,
         )
         variants.append(
             _make_variant(
@@ -1416,10 +1557,30 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
         if len(unique) >= MAX_VARIANTS:
             break
 
-    feasibility = _feasibility(db, chosen, desired_names, unique)
+    feasibility = _feasibility(db, chosen, desired_names, unique, forbidden_ids)
     base_infl = _base_influence(
         base_name, desired_set, unique, dynamic_bp=distillate_bp
     )
+
+    audience_info: Optional[AudienceInfo] = None
+    if audience:
+        examples: List[str] = []
+        if forbidden_ids:
+            example_ids = list(forbidden_ids)[:6]
+            examples = [
+                n
+                for n in db.scalars(
+                    select(RawMaterial.name).where(RawMaterial.id.in_(example_ids))
+                ).all()
+            ]
+        audience_info = AudienceInfo(
+            id=audience["id"],
+            name=audience["name"],
+            alcohol_free=audience["alcohol_free"],
+            disclaimer=audience["disclaimer"],
+            excluded_examples=sorted(examples),
+            excluded_count=len(forbidden_ids),
+        )
 
     return GenerateResponse(
         base=base_name,
@@ -1427,4 +1588,5 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
         variants=unique,
         feasibility=feasibility,
         base_influence=base_infl,
+        audience=audience_info,
     )

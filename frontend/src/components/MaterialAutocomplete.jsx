@@ -5,7 +5,12 @@ function variantKey(o) {
   return `${o.part || "whole"}|${o.form}|${o.pit}`;
 }
 
-export default function MaterialAutocomplete({ value, onChange, placeholder }) {
+export default function MaterialAutocomplete({
+  value,
+  onChange,
+  placeholder,
+  forbiddenTags,
+}) {
   const [query, setQuery] = useState(value?.name || "");
   const [suggestions, setSuggestions] = useState([]);
   const [open, setOpen] = useState(false);
@@ -31,13 +36,18 @@ export default function MaterialAutocomplete({ value, onChange, placeholder }) {
     const handle = setTimeout(async () => {
       try {
         const res = await api.suggestMaterials(query);
-        setSuggestions(res);
+        const blocked = new Set(forbiddenTags || []);
+        const filtered =
+          blocked.size === 0
+            ? res
+            : res.filter((m) => !(m.tags || []).some((t) => blocked.has(t)));
+        setSuggestions(filtered);
       } catch (_) {
         setSuggestions([]);
       }
     }, 150);
     return () => clearTimeout(handle);
-  }, [query, open]);
+  }, [query, open, forbiddenTags]);
 
   function handleInput(text) {
     setQuery(text);
@@ -64,6 +74,7 @@ export default function MaterialAutocomplete({ value, onChange, placeholder }) {
       material_id: m.id,
       name: m.name,
       has_pit_variants: m.has_pit_variants,
+      tags: m.tags || [],
       part: first.part || "whole",
       form: first.form,
       pit: first.pit,

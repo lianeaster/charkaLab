@@ -22,11 +22,30 @@ export const api = {
   materialForms: (id) => request(`/materials/${id}/forms`),
   characteristics: () => request(`/characteristics`),
   bases: () => request(`/bases`),
+  audiences: () => request(`/audiences`),
+  suggestProfile: (payload) =>
+    request(`/audiences/suggest-profile`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   generate: (payload) =>
     request(`/recipes/generate`, {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+};
+
+// Назви основ без алкоголю (0% ABV) — лише вони доступні безалкогольним ЦА.
+export const NON_ALCOHOLIC_BASES = new Set([
+  "сік (фруктовий)",
+  "мінеральна вода газована",
+]);
+
+// Людські підписи тегів-протипоказань (для пояснення, чому ЦА вимкнено).
+export const TAG_LABELS = {
+  pregnancy_unsafe: "не для вагітних/годуючих",
+  kids_unsafe: "не для дітей",
+  caffeine: "містить кофеїн",
 };
 
 export const FORM_LABELS = {

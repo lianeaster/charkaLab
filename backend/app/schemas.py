@@ -10,6 +10,7 @@ class MaterialSuggestion(BaseModel):
     name: str
     has_pit_variants: bool
     aliases: List[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
 
 
 class FormOption(BaseModel):
@@ -47,6 +48,43 @@ class GenerateRequest(BaseModel):
     additional_materials: List[MaterialSelection] = Field(default_factory=list, max_length=10)
     base_id: Optional[int] = None
     desired_characteristics: List[int] = Field(default_factory=list)
+    audience_id: Optional[str] = None
+
+
+class AudienceOut(BaseModel):
+    id: str
+    name: str
+    group: str  # adults | special
+    alcohol_free: bool
+    suggest: bool
+    forbidden_tags: List[str] = Field(default_factory=list)
+    default_profile: List[str] = Field(default_factory=list)
+    disclaimer: str = ""
+
+
+class SuggestProfileRequest(BaseModel):
+    audience_id: str
+    main_material_id: Optional[int] = None
+    # обраний варіант основної сировини — щоб не пропонувати ноти з іншого
+    # препарату (напр. мигдальний/кісточковий «з кісточкою», коли обрано «без»)
+    part: Optional[str] = None
+    form: Optional[str] = None
+    pit: Optional[str] = None
+
+
+class SuggestProfileResponse(BaseModel):
+    characteristic_ids: List[int] = Field(default_factory=list)
+    characteristic_names: List[str] = Field(default_factory=list)
+
+
+class AudienceInfo(BaseModel):
+    id: str
+    name: str
+    alcohol_free: bool = False
+    disclaimer: str = ""
+    # приклади виключеної сировини (для прозорості банера)
+    excluded_examples: List[str] = Field(default_factory=list)
+    excluded_count: int = 0
 
 
 class CompoundContribution(BaseModel):
@@ -86,6 +124,7 @@ class RecipeVariant(BaseModel):
     taste_profile: List[CharacteristicScore]
     covered: List[str]
     missing: List[str]
+    weak: List[str] = Field(default_factory=list)
     compounds: List[CompoundContribution]
     balance_notes: List[str] = Field(default_factory=list)
     explanation: str
@@ -120,3 +159,4 @@ class GenerateResponse(BaseModel):
     variants: List[RecipeVariant]
     feasibility: ProfileFeasibility = Field(default_factory=ProfileFeasibility)
     base_influence: Optional[BaseInfluence] = None
+    audience: Optional[AudienceInfo] = None

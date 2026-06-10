@@ -48,6 +48,7 @@ def suggest(
             name=r.name,
             has_pit_variants=r.has_pit_variants,
             aliases=[a for a in (r.aliases or "").split(",") if a],
+            tags=[t for t in (r.tags or "").split(",") if t],
         )
         for r in rows
     ]

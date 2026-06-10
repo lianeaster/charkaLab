@@ -163,7 +163,10 @@ function ScoreBadge({ score }) {
   const color =
     pct >= 80 ? "bg-charka-600" : pct >= 50 ? "bg-charka-400" : "bg-stone-400";
   return (
-    <span className={`rounded-full px-3 py-1 text-sm font-semibold text-white ${color}`}>
+    <span
+      title="Відповідність бажаному профілю: покриття + сила + точність нот"
+      className={`rounded-full px-3 py-1 text-sm font-semibold text-white ${color}`}
+    >
       {pct}% збіг
     </span>
   );
@@ -175,8 +178,11 @@ function BalanceBadge({ score }) {
     pct >= 85 ? "bg-wine-500" : pct >= 60 ? "bg-wine-200 text-wine-700" : "bg-stone-300 text-stone-700";
   const textColor = pct >= 85 ? "text-white" : "";
   return (
-    <span className={`rounded-full px-3 py-1 text-sm font-semibold ${color} ${textColor}`}>
-      {pct}% баланс
+    <span
+      title="Рівновага смаку (солодке/кисле/гірке/терпке) — не плутати зі «збігом» профілю"
+      className={`rounded-full px-3 py-1 text-sm font-semibold ${color} ${textColor}`}
+    >
+      {pct}% баланс смаку
     </span>
   );
 }
@@ -389,6 +395,34 @@ function FeasibilityBanner({ feasibility }) {
   );
 }
 
+function AudienceBanner({ audience }) {
+  if (!audience || (!audience.disclaimer && audience.excluded_count === 0)) {
+    return null;
+  }
+  return (
+    <div className="rounded-2xl border border-stone-200 bg-stone-50 p-4 text-sm text-stone-700">
+      <div className="font-semibold text-stone-800">
+        Аудиторія: {audience.name}
+        {audience.alcohol_free && (
+          <span className="ml-2 rounded-full bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700">
+            0% алкоголю
+          </span>
+        )}
+      </div>
+      {audience.disclaimer && <p className="mt-1">{audience.disclaimer}</p>}
+      {audience.excluded_count > 0 && (
+        <p className="mt-1 text-stone-500">
+          Виключено зі складу {audience.excluded_count} видів сировини
+          {audience.excluded_examples?.length > 0 && (
+            <> (напр. {audience.excluded_examples.join(", ")})</>
+          )}
+          .
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function RecipeResults({ result }) {
   if (!result) return null;
   const radarMax = radarScaleMax(result.variants);
@@ -402,6 +436,7 @@ export default function RecipeResults({ result }) {
           {result.desired.join(", ") || "не задано"}
         </span>
       </div>
+      <AudienceBanner audience={result.audience} />
       <BaseInfluenceBanner influence={result.base_influence} />
       <FeasibilityBanner feasibility={result.feasibility} />
       {result.variants.map((v, i) => (

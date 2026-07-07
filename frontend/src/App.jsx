@@ -39,7 +39,12 @@ export default function App() {
   const [desired, setDesired] = useState([]);
 
   const [result, setResult] = useState(null);
+  // Знімок запиту, з яким згенеровано `result` — потрібен для перерахунку
+  // окремого варіанта при редагуванні складу (щоб контекст не «поплив»,
+  // якщо користувач змінить поля форми після генерації).
+  const [reqSnapshot, setReqSnapshot] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [surprising, setSurprising] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -53,6 +58,14 @@ export default function App() {
     for (const a of audiences) map[a.id] = a;
     return map;
   }, [audiences]);
+
+  // Мапа назва→id характеристик — щоб редагувати склад «Здивуй-мене» варіантів,
+  // де профіль (у назвах) свій на кожен рецепт.
+  const charIdByName = useMemo(() => {
+    const map = {};
+    for (const c of characteristics) map[c.name] = c.id;
+    return map;
+  }, [characteristics]);
   const audience = audienceById[audienceId];
   const alcoholFree = Boolean(audience?.alcohol_free);
   const forbiddenTags = useMemo(
@@ -61,14 +74,26 @@ export default function App() {
   );
   const mainMaterialId = mainMaterial?.material_id ?? null;
 
-  // Якщо обрана основна сировина протипоказана поточній ЦА — повертаємось до
-  // «дорослі» (категорію в селекторі буде візуально вимкнено).
+  // Теги всієї обраної користувачем сировини (основна + допоміжна) — для
+  // блокування несумісних категорій аудиторії.
+  const selectedTags = useMemo(() => {
+    const tags = new Set(mainMaterial?.tags || []);
+    for (const a of additional) {
+      for (const t of a?.tags || []) tags.add(t);
+    }
+    return [...tags];
+  }, [mainMaterial, additional]);
+
+  // Якщо будь-яка обрана сировина (основна чи допоміжна) протипоказана поточній
+  // ЦА — повертаємось до «дорослі» (категорію в селекторі буде вимкнено).
   useEffect(() => {
-    const tags = mainMaterial?.tags || [];
-    if (audience && (audience.forbidden_tags || []).some((t) => tags.includes(t))) {
+    if (
+      audience &&
+      (audience.forbidden_tags || []).some((t) => selectedTags.includes(t))
+    ) {
       setAudienceId("adults");
     }
-  }, [mainMaterialId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedTags]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Авто-профіль: для ЦА з suggest=true підставляємо популярний профіль за
   // категорією + основною сировиною (саме обраним варіантом — форма/кісточка).
@@ -86,6 +111,7 @@ export default function App() {
         part: mainMaterial?.part ?? null,
         form: mainMaterial?.form ?? null,
         pit: mainMaterial?.pit ?? null,
+        season,
       })
       .then((r) => {
         if (!cancelled) setDesired(r.characteristic_ids);
@@ -94,7 +120,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [audienceId, mainMaterialId, mainVariantKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [audienceId, mainMaterialId, mainVariantKey, season]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Безалкогольні ЦА: лишаємо лише 0%-основу, дефолт — перша безалкогольна.
   useEffect(() => {
@@ -104,7 +130,8 @@ export default function App() {
     setBaseId(allowed[0]?.id ?? null);
   }, [alcoholFree, bases]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const canSubmit = mainMaterial?.material_id && !loading;
+  const canSubmit =
+    mainMaterial?.material_id && desired.length > 0 && !loading && !surprising;
 
   async function handleGenerate() {
     setError(null);
@@ -133,10 +160,55 @@ export default function App() {
       };
       const res = await api.generate(payload);
       setResult(res);
+      setReqSnapshot(payload);
     } catch (e) {
       setError(e.message || "Помилка генерації");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleSurprise() {
+    if (!mainMaterial?.material_id) return;
+    setError(null);
+    setSurprising(true);
+    setResult(null);
+    try {
+      const main_material = {
+        material_id: mainMaterial.material_id,
+        part: mainMaterial.part,
+        form: mainMaterial.form,
+        pit: mainMaterial.pit,
+      };
+      const additional_materials = additional
+        .filter((a) => a && a.material_id)
+        .map((a) => ({
+          material_id: a.material_id,
+          part: a.part,
+          form: a.form,
+          pit: a.pit,
+        }));
+      const res = await api.surprise({
+        main_material,
+        additional_materials,
+        base_id: baseId,
+        audience_id: audienceId,
+        season,
+      });
+      setResult(res);
+      // Профіль у «Здивуй мене» свій на кожен варіант (у v.desired), тож
+      // загальний desired лишаємо порожнім — редактор візьме профіль з варіанта.
+      setReqSnapshot({
+        main_material,
+        base_id: baseId,
+        desired_characteristics: [],
+        audience_id: audienceId,
+        season,
+      });
+    } catch (e) {
+      setError(e.message || "Помилка добору");
+    } finally {
+      setSurprising(false);
     }
   }
 
@@ -163,7 +235,7 @@ export default function App() {
             audiences={audiences}
             value={audienceId}
             onChange={setAudienceId}
-            mainMaterialTags={mainMaterial?.tags ?? []}
+            mainMaterialTags={selectedTags}
           />
           {audience?.disclaimer && (
             <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
@@ -223,6 +295,28 @@ export default function App() {
               : "Які характеристики має мати напій?"
           }
         >
+          <div className="mb-4 rounded-xl border border-dashed border-charka-300 bg-gradient-to-r from-charka-50 to-wine-50 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-sm text-stone-600">
+                Не знаєте, що обрати? Хай система сама добере 3 рецепти під вашу
+                сировину — з максимальними збігом, балансом і гармонією.
+              </p>
+              <button
+                type="button"
+                onClick={handleSurprise}
+                disabled={!mainMaterial?.material_id || surprising || loading}
+                className="shrink-0 rounded-xl bg-wine-600 px-5 py-2.5 text-sm font-semibold text-white shadow hover:bg-wine-700 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {surprising ? "Добираємо…" : "✨ Здивуй мене"}
+              </button>
+            </div>
+            {!mainMaterial?.material_id && (
+              <p className="mt-1 text-xs text-stone-400">
+                Спочатку оберіть основну сировину (крок 3).
+              </p>
+            )}
+          </div>
+
           <ProfileSelector
             characteristics={characteristics}
             selected={desired}
@@ -239,6 +333,13 @@ export default function App() {
           {loading ? "Генерація…" : "Згенерувати рецепти"}
         </button>
 
+        {mainMaterial?.material_id && desired.length === 0 && !surprising && (
+          <p className="-mt-2 text-sm text-stone-400">
+            Оберіть хоча б одну характеристику профілю (крок 6) — або натисніть
+            «✨ Здивуй мене», щоб система підібрала профіль сама.
+          </p>
+        )}
+
         {error && (
           <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             {error}
@@ -250,7 +351,12 @@ export default function App() {
             <h2 className="mb-3 text-lg font-semibold text-stone-800">
               Запропоновані композиції
             </h2>
-            <RecipeResults result={result} />
+            <RecipeResults
+              result={result}
+              request={reqSnapshot}
+              forbiddenTags={forbiddenTags}
+              charIdByName={charIdByName}
+            />
           </div>
         )}
       </div>

@@ -144,8 +144,10 @@ export async function downloadRecipePdf(result, variant, index = 0) {
     { size: 10, color: [120, 110, 100], gap: 4 }
   );
   if (result.base) w.text(`Основа: ${result.base}`, { size: 10, gap: 2 });
-  if (result.desired?.length)
-    w.text(`Бажаний профіль: ${result.desired.join(", ")}`, {
+  const profileNotes =
+    variant.desired?.length ? variant.desired : result.desired;
+  if (profileNotes?.length)
+    w.text(`Бажаний профіль: ${profileNotes.join(", ")}`, {
       size: 10,
       gap: 2,
     });

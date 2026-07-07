@@ -33,6 +33,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  recompute: (payload) =>
+    request(`/recipes/recompute`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  surprise: (payload) =>
+    request(`/recipes/surprise`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 };
 
 // Назви основ без алкоголю (0% ABV) — лише вони доступні безалкогольним ЦА.

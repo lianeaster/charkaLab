@@ -38,5 +38,6 @@ def suggest_profile(req: SuggestProfileRequest, db: Session = Depends(get_db)):
     if not audience["suggest"]:
         return SuggestProfileResponse()
     return engine.suggest_profile(
-        db, audience, req.main_material_id, req.part, req.form, req.pit
+        db, audience, req.main_material_id, req.part, req.form, req.pit,
+        season=req.season,
     )

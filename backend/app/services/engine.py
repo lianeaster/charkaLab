@@ -10,8 +10,10 @@
 
 from __future__ import annotations
 
+import random
 from collections import defaultdict
 from dataclasses import dataclass, field
+from itertools import combinations
 from typing import Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import select
@@ -51,8 +53,10 @@ from ..schemas import (
     PyramidLayer,
     ProfileFeasibility,
     RecipeVariant,
+    RecomputeRequest,
     SeasonInfo,
     SuggestProfileResponse,
+    SurpriseRequest,
 )
 
 MAX_VARIANTS = 4
@@ -75,7 +79,6 @@ TARGET_STRENGTH = 0.8
 # реально підсилює. Якщо жодна доступна сировина не дає стільки «чисто» —
 # ноту вважаємо недосяжною й припиняємо марні додавання.
 MIN_REINFORCE = 0.3
-MAX_BALANCE_STEPS = 3
 
 # Поріг, з якого бажана нота вважається реально присутньою (а не слідовою):
 # нижче COVERED_MIN — нота «не покрита»; між COVERED_MIN і WEAK_CEIL — «слабка»
@@ -91,8 +94,19 @@ ASTRINGENT = "терпкий"
 PUNGENT = "пекучий"
 # "Гострі" структурні смаки, які потребують пом'якшення солодким
 HARSH_AXES = (BITTER, ASTRINGENT, PUNGENT)
+# Структурні смакові осі НЕ летючі: солодкість, кислота, гіркота, терпкість і
+# пекучість лишаються на піднебінні й формують фініш (базу) напою — на відміну
+# від ароматів, що вивітрюються. Тож база напою не буває «порожньою»: навіть
+# коли важких аромосполук нема, смаковий кістяк тримає післясмак.
+_FINISH_AXES = (SWEET, SOUR, BITTER, ASTRINGENT, PUNGENT)
 # Поріг, з якого смак вважається помітним
 BALANCE_TOL = 0.5
+
+# Перцептивне маскування: солодкість пригнічує сприйняття гіркоти/терпкості/
+# пекучості (класична смакова супресія). Коли до напою додано цукор/мед, у
+# радарі, профілі смаку та піраміді показуємо ВІДЧУТНИЙ рівень гострих смаків,
+# а не хімічний. Частка пригнічення масштабується рівнем солодкості (до 1.0).
+SWEET_MASK = 0.45
 
 
 SUGAR_NAME = "цукор"
@@ -178,6 +192,14 @@ SWEETENER_AROMA = 0.6
 LAYER_DOSE_CAP = {VOL_TOP: 0.4, VOL_HEART: 0.85, VOL_BASE: 0.55}
 # Поріг, нижче якого база вважається слабкою → додаємо ноту для післясмаку
 BASE_MIN = 0.5
+
+# Спирт як фіксатор: етанол подовжує звучання ароматів, зтягуючи частину
+# сердечних (heart) нот у фініш (base). Тож у спиртному напої база не буває
+# порожньою — її тримають РІДНІ ноти напою, що затримуються на піднебінні.
+# Ефект масштабується за ABV: чим міцніша основа, тим довший шлейф. Безалкогольні
+# основи (0% ABV) фіксатора не дають — там післясмаку справді нема звідки взятись.
+FIXATIVE_REF_ABV = 60  # ABV, за якого фіксатор виходить на повну силу
+FIXATIVE_STRENGTH = 0.35  # частка сердечних ароматів, що переходить у базу
 
 # Спеціальна назва для динамічної основи — дистилят з основної сировини.
 # Реальний профіль будується у generate() з аромосполук головної сировини.
@@ -283,6 +305,7 @@ class ResolvedSelection:
     pit: str
     role: str  # main | additional | suggested | balance | harmony | sweetener | base_spirit
     sweet_add: float = 0.0  # пряма солодкість (цукор), без аромату
+    abv: int = 0  # міцність основи (для base_spirit): визначає фіксувальний ефект
     amount: float = 1.0  # частка (доза) інгредієнта; основна сировина = 1.0
     # готовий внесок у профіль (для основи): список (char, value, kind, volatility).
     # Якщо заданий — береться напряму, без читання сировини з БД.
@@ -337,7 +360,8 @@ def _add_selection_to_profile(
     # Пряма (дозована) солодкість підсолоджувача — цукру чи меду
     if selection.sweet_add > 0:
         profile.taste[SWEET] += selection.sweet_add
-        profile.layers[VOL_HEART][SWEET] += selection.sweet_add
+        # солодкість — частина фінішу (не летить), тож у базу
+        profile.layers[VOL_BASE][SWEET] += selection.sweet_add
         marker = selection.name or SUGAR_NAME
         if marker not in profile.compounds:
             profile.compounds[marker] = (KIND_TASTE, {SWEET})
@@ -367,20 +391,22 @@ def _add_selection_to_profile(
         recorded: Set[str] = set()
         for char_name, weight in char_weights.items():
             contribution = mc.intensity * weight * amount
-            added_to_layer = False
-            if compound.kind in (KIND_AROMA, KIND_BOTH):
+            # Структурні смаки не летять — хай з якою сполукою прийшли, вони
+            # формують фініш (базу). Ароматичні ноти розкладаються за летючістю
+            # сполуки (для основної сировини — примусово у «серце»).
+            target_layer = VOL_BASE if char_name in _FINISH_AXES else layer
+            in_aroma = compound.kind in (KIND_AROMA, KIND_BOTH)
+            in_taste = compound.kind in (KIND_TASTE, KIND_BOTH) and not is_sweetener
+            if in_aroma:
                 profile.aroma[char_name] += contribution
-                profile.layers[layer][char_name] += contribution
-                added_to_layer = True
                 recorded.add(char_name)
-            if compound.kind in (KIND_TASTE, KIND_BOTH):
+            if in_taste:
                 # для підсолоджувача (мед) дозу солодкості вже задано через
-                # sweet_add — власні смакові ноти не додаємо, щоб не дублювати
-                if not is_sweetener:
-                    profile.taste[char_name] += contribution
-                    if not added_to_layer:
-                        profile.layers[layer][char_name] += contribution
-                    recorded.add(char_name)
+                # sweet_add — власні смакові ноти тут не додаємо, щоб не дублювати
+                profile.taste[char_name] += contribution
+                recorded.add(char_name)
+            if in_aroma or in_taste:
+                profile.layers[target_layer][char_name] += contribution
         if not recorded:
             continue
         if compound.name not in profile.compounds:
@@ -389,10 +415,37 @@ def _add_selection_to_profile(
             profile.compounds[compound.name][1].update(recorded)
 
 
+def _apply_base_fixative(
+    profile: Profile, selections: List[ResolvedSelection]
+) -> None:
+    """Ефект фіксатора спиртної основи: частина сердечних (heart) АРОМАТИЧНИХ нот
+    напою затримується у фініші (base) пропорційно ABV. Смакові осі фінішу вже
+    тримаються самі (не летять), тож їх не чіпаємо. Тотали aroma/taste (а отже й
+    оцінки збігу/гармонії) не змінюються — лишень наповнюється ольфакторна база."""
+    abv = max(
+        (s.abv for s in selections if s.role == "base_spirit"),
+        default=0,
+    )
+    if abv <= 0:
+        return
+    frac = min(abv / FIXATIVE_REF_ABV, 1.0) * FIXATIVE_STRENGTH
+    if frac <= 0:
+        return
+    heart = profile.layers.get(VOL_HEART, {})
+    carried = {
+        name: value * frac
+        for name, value in heart.items()
+        if value > 0 and name not in _FINISH_AXES
+    }
+    for name, add in carried.items():
+        profile.layers[VOL_BASE][name] += add
+
+
 def _build_profile(db: Session, selections: List[ResolvedSelection]) -> Profile:
     profile = Profile()
     for sel in selections:
         _add_selection_to_profile(db, sel, profile)
+    _apply_base_fixative(profile, selections)
     return profile
 
 
@@ -438,26 +491,36 @@ def _score(profile: Profile, desired_names: List[str]) -> float:
     return round(score, 3)
 
 
-def _balance_score(profile: Profile) -> float:
-    """Наскільки збалансований смак: жоден елемент не домінує."""
+def _balance_score(profile: Profile, desired_set: Set[str] = frozenset()) -> float:
+    """Наскільки збалансований смак: жоден НЕБАЖАНИЙ елемент не домінує.
+
+    Бажані осі не штрафуються: якщо користувач замовив «гіркий» (напр. профіль
+    гурмана), виражена гіркота — це виконання профілю, а не дисбаланс. Караємо
+    лише сторонні гострі смаки, не врівноважені солодким.
+    """
     sweet = profile.taste.get(SWEET, 0.0)
     sour = profile.taste.get(SOUR, 0.0)
-    harsh = sum(profile.taste.get(a, 0.0) for a in HARSH_AXES)
+    # для штрафів враховуємо лише гострі смаки ПОЗА бажаним профілем
+    harsh_off = sum(
+        profile.taste.get(a, 0.0) for a in HARSH_AXES if a not in desired_set
+    )
+    harsh_all = sum(profile.taste.get(a, 0.0) for a in HARSH_AXES)
 
     score = 1.0
-    # гострі смаки не врівноважені солодким
-    if harsh > 0.4:
-        deficit = harsh - sweet
+    # сторонні гострі смаки не врівноважені солодким
+    if harsh_off > 0.4:
+        deficit = harsh_off - sweet
         if deficit > 0:
             score -= min(0.5, deficit * 0.4)
-    # надмірна кислотність без солодкого
-    if sour > BALANCE_TOL and sweet < sour * 0.5:
+    # надмірна (небажана) кислотність без солодкого
+    if SOUR not in desired_set and sour > BALANCE_TOL and sweet < sour * 0.5:
         score -= min(0.25, (sour - sweet) * 0.3)
     # нудотно-солодко та "пласко" — нема кислотного/гіркого контрасту
-    if sweet > 1.2 and sour < 0.2 and harsh < 0.2:
+    # (не штрафуємо, якщо солодкість — бажана характеристика)
+    if SWEET not in desired_set and sweet > 1.2 and sour < 0.2 and harsh_all < 0.2:
         score -= 0.25
     # зовсім без структурного смаку — одновимірно
-    if sweet + sour + harsh < 0.2:
+    if sweet + sour + harsh_all < 0.2:
         score -= 0.1
     return round(max(0.0, min(1.0, score)), 3)
 
@@ -482,6 +545,31 @@ def _forbidden_material_ids(db: Session, forbidden_tags: Set[str]) -> Set[int]:
         if mat_tags & forbidden_tags:
             out.add(mid)
     return out
+
+
+def forbidden_user_materials(
+    db: Session, audience_id: Optional[str], material_ids: List[int]
+) -> List[str]:
+    """Назви обраної КОРИСТУВАЧЕМ сировини, забороненої для цієї ЦА.
+
+    Жорсткий фільтр аудиторії має діяти не лише на авто-добір, а й на сировину,
+    яку користувач обрав сам — інакше «безпечний» рецепт міститиме
+    протипоказаний інгредієнт. Використовується роутерами для відмови (422).
+    """
+    audience = get_audience(audience_id)
+    if not audience or not audience["forbidden_tags"]:
+        return []
+    forbidden = _forbidden_material_ids(db, set(audience["forbidden_tags"]))
+    return sorted(
+        {_resolve_name(db, mid) for mid in material_ids if mid in forbidden}
+    )
+
+
+def variant_exists(
+    db: Session, material_id: int, part: str, form: str, pit: str
+) -> bool:
+    """Чи існує в сировини варіант (part, form, pit) із хоч однією сполукою."""
+    return (part, form, pit) in _option_breakdown(db, material_id)
 
 
 def _out_of_season_fresh_ids(db: Session, season: Optional[str]) -> Set[int]:
@@ -527,10 +615,19 @@ _MATERIAL_PROFILE_PICKS = 2
 
 
 def _note_reachable(
-    db: Session, char: str, main_id: int, desired_set: Set[str]
+    db: Session,
+    char: str,
+    main_id: int,
+    desired_set: Set[str],
+    forbidden_ids: Set[int] = frozenset(),
+    season_blocked_ids: Set[int] = frozenset(),
 ) -> bool:
     """Чи реально дати ноту `char` на цій основній сировині: вона сама її несе,
     або є чистий підсилювач (не перебиває профіль), який дотягне до MIN_REINFORCE.
+
+    Враховуємо ті самі фільтри, що діятимуть при генерації (заборони ЦА та
+    сезонне блокування свіжої форми) — інакше пообіцяємо ноту, яку добір
+    потім чесно не зможе дати.
 
     Солодкість завжди досяжна — її додає підсолоджувач."""
     if char == SWEET:
@@ -538,7 +635,9 @@ def _note_reachable(
     for chans in _option_breakdown(db, main_id).values():
         if chans.get(f"aroma::{char}", 0.0) + chans.get(f"taste::{char}", 0.0) > 0:
             return True
-    cand = _best_for_char(db, char, {main_id}, desired_set)
+    cand = _best_for_char(
+        db, char, {main_id} | set(forbidden_ids), desired_set, season_blocked_ids
+    )
     return cand is not None and cand[4] >= MIN_REINFORCE
 
 
@@ -549,6 +648,7 @@ def suggest_profile(
     part: Optional[str] = None,
     form: Optional[str] = None,
     pit: Optional[str] = None,
+    season: Optional[str] = None,
 ) -> SuggestProfileResponse:
     """Популярний профіль під ЦА + природні ноти основної сировини.
 
@@ -582,11 +682,23 @@ def suggest_profile(
                 break
 
     if main_material_id:
+        # Досяжність перевіряємо з тими самими фільтрами, що діятимуть при
+        # генерації: заборонена для ЦА сировина та позасезонна свіжа форма
+        # не можуть бути «носіями» обіцяної ноти.
+        forbidden_ids = _forbidden_material_ids(
+            db, set(audience.get("forbidden_tags", []))
+        )
+        season_blocked_ids = _out_of_season_fresh_ids(
+            db, season if seasons.is_valid(season) else None
+        )
         tentative = set(base_notes) | set(picks)
         base_notes = [
             n
             for n in base_notes
-            if _note_reachable(db, n, main_material_id, tentative)
+            if _note_reachable(
+                db, n, main_material_id, tentative,
+                forbidden_ids, season_blocked_ids,
+            )
         ]
     names = (base_notes + picks)[:_MAX_PROFILE_NOTES]
 
@@ -790,9 +902,16 @@ def _find_taste_provider(
     needed_char: str,
     exclude_ids: Set[int],
     avoid_chars: Set[str],
+    desired_set: Set[str],
     season_blocked_ids: Set[int] = frozenset(),
 ) -> Optional[Tuple[int, str, str, str]]:
-    """Сировина, що дає потрібний СМАК (needed_char) з мінімумом небажаних смаків.
+    """Сировина, що дає потрібний СМАК (needed_char), не ламаючи профіль.
+
+    Крім мінімуму небажаних СМАКІВ (avoid_chars) враховуємо й АРОМАТИЧНИЙ шум:
+    кислий інгредієнт не повинен тягти гучні сторонні ноти у профіль (напр.
+    журавлина у квітковий напій). Кандидати, що «перебивають» профіль, або
+    шумлять більше, ніж дають користі, відкидаються — якщо чистого носія смаку
+    нема, чесно повертаємо None (краще без кислинки, ніж зіпсований профіль).
 
     Повертає (material_id, part, form, pit).
     """
@@ -814,7 +933,10 @@ def _find_taste_provider(
         .distinct()
     ).all()
 
-    best: Optional[Tuple[int, str, str, str, float]] = None
+    # Потрібний смак вважаємо «бажаним» на час пошуку, щоб він не рахувався шумом
+    target_set = desired_set | {needed_char}
+    best: Optional[Tuple[int, str, str, str]] = None
+    best_score = 0.0
     for mid in material_ids:
         for (part, form, pit), chans in _option_breakdown(db, mid).items():
             if form == FORM_FRESH and mid in season_blocked_ids:
@@ -823,12 +945,14 @@ def _find_taste_provider(
             if need <= 0:
                 continue
             avoid = sum(chans.get(f"taste::{c}", 0.0) for c in avoid_chars)
-            net = need - avoid
-            if best is None or net > best[4]:
-                best = (mid, part, form, pit, net)
-    if best is None:
-        return None
-    return best[0], best[1], best[2], best[3]
+            if _overpowers(chans, target_set):
+                continue  # найгучніша стороння нота перебила б профіль
+            _on, off, _net = _option_net(chans, target_set)
+            score = need - avoid - OFF_PENALTY * off
+            if score > best_score:
+                best_score = score
+                best = (mid, part, form, pit)
+    return best
 
 
 def _best_for_char(
@@ -926,12 +1050,18 @@ def _finalize(
     base_conflict_chars: Set[str] = frozenset(),
     forbidden_ids: Set[int] = frozenset(),
     season_blocked_ids: Set[int] = frozenset(),
+    auto_extend: bool = True,
 ) -> Tuple[List[ResolvedSelection], List[str]]:
     """Дозування інгредієнтів + балансування смаку + мінімум інгредієнтів.
 
     max_ingredients — стеля ароматичних складових (для «лаконічної» композиції
     можна задати MIN_INGREDIENTS). sweetener — чим підсолоджувати: автоматично,
     примусово медом чи цукром (для варіанта з альтернативним підсолоджувачем).
+
+    auto_extend — чи дозволено алгоритму САМОМУ додавати нові ароматичні
+    складові (підсилення профілю, добір мінімуму, базова нота). Для перерахунку
+    відредагованого користувачем складу передаємо False: дозуємо й балансуємо
+    саме той набір, що обрав користувач, нічого не додаючи понад підсолоджувач.
     """
     notes: List[str] = []
     used: Set[int] = {s.material_id for s in selections}
@@ -979,7 +1109,7 @@ def _finalize(
     effective_desired = desired_set - base_conflict_chars
 
     guard = 0
-    while guard < max_ingredients + 2 * MIN_INGREDIENTS:
+    while auto_extend and guard < max_ingredients + 2 * MIN_INGREDIENTS:
         guard += 1
         count = _aromatic_count()
         if count >= max_ingredients:
@@ -1031,9 +1161,15 @@ def _finalize(
 
     # 2) Глибокий післясмак: якщо база (стійкі ноти) слабка, додаємо одну чисту
     #    базову ноту, що підсилює бажаний профіль — вона тримається у фініші.
-    if _aromatic_count() < max_ingredients:
+    if auto_extend and _aromatic_count() < max_ingredients:
         prof = _build_profile(db, selections)
-        if prof.layer_total(VOL_BASE) < BASE_MIN:
+        # Глибина саме АРОМАТИЧНОЇ бази (без структурного смакового фінішу):
+        # смак базу вже тримає, але тут шукаємо стійку аромо-ноту для післясмаку.
+        base_aroma = sum(
+            v for n, v in prof.layers.get(VOL_BASE, {}).items()
+            if n not in _FINISH_AXES
+        )
+        if base_aroma < BASE_MIN:
             block = used | honey_block
             for c in _find_candidates(
                 db, effective_desired, block, effective_desired, season_blocked_ids
@@ -1154,7 +1290,7 @@ def _finalize(
         and SWEET not in desired_set
     ):
         prov = _find_taste_provider(
-            db, SOUR, used, set(HARSH_AXES), season_blocked_ids
+            db, SOUR, used, set(HARSH_AXES), desired_set, season_blocked_ids
         )
         if prov:
             mid, part, form, pit = prov
@@ -1170,6 +1306,30 @@ def _finalize(
             )
 
     return selections, notes
+
+
+def _sweet_mask_factor(profile: Profile) -> float:
+    """Коефіцієнт пригнічення гострих смаків солодкістю (0 — без маскування)."""
+    sweet = profile.taste.get(SWEET, 0.0)
+    if sweet <= 0:
+        return 0.0
+    return SWEET_MASK * min(1.0, sweet)
+
+
+def _perceived_taste(profile: Profile) -> Dict[str, float]:
+    """ВІДЧУТНИЙ смаковий профіль: солодкість маскує гіркоту/терпкість/пекучість.
+
+    Використовується для відображення (радар, смаковий профіль) — щоб напій
+    із цукром, доданим проти гіркоти, не виглядав так само гірким, як без нього.
+    Хімічні значення (для балансування й покриття профілю) лишаються сирими.
+    """
+    k = _sweet_mask_factor(profile)
+    if k <= 0:
+        return dict(profile.taste)
+    return {
+        name: value * (1.0 - k) if name in HARSH_AXES else value
+        for name, value in profile.taste.items()
+    }
 
 
 def _profile_scores(
@@ -1198,15 +1358,21 @@ def _build_pyramid(profile: Profile, desired_set: Set[str]) -> List[PyramidLayer
         VOL_HEART: "Серце (основна сировина)",
         VOL_BASE: "База (післясмак)",
     }
+    # У піраміді показуємо відчутні рівні: солодкість маскує гострі смаки у фініші
+    mask = _sweet_mask_factor(profile)
     out: List[PyramidLayer] = []
     for layer in (VOL_TOP, VOL_HEART, VOL_BASE):
         chars = profile.layers.get(layer, {})
+        perceived = {
+            name: value * (1.0 - mask) if name in HARSH_AXES else value
+            for name, value in chars.items()
+        }
         notes = [
             CharacteristicScore(
                 name=name, score=round(value, 3), covered=name in desired_set
             )
             for name, value in sorted(
-                chars.items(), key=lambda kv: kv[1], reverse=True
+                perceived.items(), key=lambda kv: kv[1], reverse=True
             )
             if value > 0
         ]
@@ -1228,7 +1394,7 @@ def _make_variant(
     profile = _build_profile(db, selections)
     desired_set = set(desired_names)
     score = _score(profile, desired_names)
-    balance = _balance_score(profile)
+    balance = _balance_score(profile, desired_set)
     # Гастрономічна гармонія: сумісність ароматичних родин (аромат+смак разом).
     merged_totals: Dict[str, float] = defaultdict(float)
     for name, value in profile.aroma.items():
@@ -1290,13 +1456,15 @@ def _make_variant(
 
     return RecipeVariant(
         title=title,
+        desired=list(desired_names),
         match_score=score,
         balance_score=balance,
         harmony_score=harmony_res.score,
         harmony_notes=harmony_res.notes,
         materials=materials,
         aroma_profile=_profile_scores(profile, profile.aroma, desired_set),
-        taste_profile=_profile_scores(profile, profile.taste, desired_set),
+        # смак показуємо ВІДЧУТНИЙ: солодкість маскує гіркоту/терпкість/пекучість
+        taste_profile=_profile_scores(profile, _perceived_taste(profile), desired_set),
         covered=covered,
         missing=missing,
         weak=weak,
@@ -1461,6 +1629,16 @@ def _base_contribution(
         return _distillate_contribution(db, main_sel)
     bp = BASE_PROFILES.get(base_name)
     return list(bp["profile_contrib"]) if bp else []
+
+
+def _base_abv(base_name: Optional[str]) -> int:
+    """Міцність основи (%). Дистилят — концентрований спирт (~75%); решта — за
+    BASE_PROFILES; безалкогольні та невідомі основи → 0."""
+    if not base_name:
+        return 0
+    if base_name == DISTILLATE_BASE_NAME:
+        return 75
+    return int(BASE_PROFILES.get(base_name, {}).get("abv", 0))
 
 
 def _base_influence(
@@ -1643,7 +1821,7 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
     ]
     # Основа з власним внеском бере участь у профілі як окремий елемент,
     # але не показується серед інгредієнтів (вона у банері «Вплив основи»).
-    if base_contrib:
+    if base_name:
         chosen.append(
             ResolvedSelection(
                 material_id=-1,
@@ -1653,9 +1831,20 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
                 pit="na",
                 role="base_spirit",
                 inline_contrib=base_contrib,
+                abv=_base_abv(base_name),
             )
         )
+    # Дедуплікація: той самий ВАРІАНТ сировини (сировина+частина+форма+кісточка)
+    # не додається двічі, інакше його внесок у профіль задвоюється. Різні форми
+    # тієї ж сировини (сік + цедра апельсина) — легальні окремі інгредієнти.
+    seen_variants: Set[Tuple[int, str, str, str]] = {
+        (s.material_id, s.part, s.form, s.pit) for s in chosen
+    }
     for add in req.additional_materials:
+        key = (add.material_id, add.part, add.form, add.pit)
+        if key in seen_variants:
+            continue
+        seen_variants.add(key)
         chosen.append(
             ResolvedSelection(
                 material_id=add.material_id,
@@ -1808,6 +1997,462 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
         desired=desired_names,
         variants=unique,
         feasibility=feasibility,
+        base_influence=base_infl,
+        audience=audience_info,
+        season=season_info,
+    )
+
+
+def recompute(db: Session, req: RecomputeRequest) -> RecipeVariant:
+    """Перерахунок одного варіанта з відредагованим користувачем складом.
+
+    Бере фіксовану основну сировину + залишені/додані користувачем інгредієнти,
+    переобчислює дози та баланс (підсолоджувач/кислинку) і повертає готовий
+    варіант. Нову ароматику алгоритм сам НЕ добирає (auto_extend=False) — склад
+    лишається саме таким, як його зібрав користувач.
+    """
+    desired_rows = db.scalars(
+        select(Characteristic).where(Characteristic.id.in_(req.desired_characteristics))
+    ).all()
+    desired_names = [c.name for c in desired_rows]
+    desired_set = set(desired_names)
+
+    audience = get_audience(req.audience_id)
+    forbidden_tags: Set[str] = set(audience["forbidden_tags"]) if audience else set()
+    forbidden_ids = _forbidden_material_ids(db, forbidden_tags)
+
+    season = req.season if seasons.is_valid(req.season) else None
+    season_blocked_ids = _out_of_season_fresh_ids(db, season)
+
+    # Основа: власний внесок у профіль + конфлікти (як у generate, без банера).
+    base_name: Optional[str] = None
+    base_conflict_chars: Set[str] = set()
+    base_contrib: List[Tuple[str, float, str, str]] = []
+    if req.base_id is not None:
+        base = db.get(Base_, req.base_id)
+        base_name = base.name if base else None
+        if base_name and base_name in BASE_PROFILES:
+            base_conflict_chars = BASE_PROFILES[base_name]["conflicts"]
+        base_contrib = _base_contribution(db, base_name, req.main_material)
+    if audience and audience["alcohol_free"] and base_name:
+        is_alcoholic = base_name == DISTILLATE_BASE_NAME or (
+            BASE_PROFILES.get(base_name, {}).get("abv", 0) > 0
+        )
+        if is_alcoholic:
+            base_name = None
+            base_conflict_chars = set()
+            base_contrib = []
+
+    selections: List[ResolvedSelection] = [
+        ResolvedSelection(
+            material_id=req.main_material.material_id,
+            name=_resolve_name(db, req.main_material.material_id),
+            part=req.main_material.part,
+            form=req.main_material.form,
+            pit=req.main_material.pit,
+            role="main",
+        )
+    ]
+    if base_name:
+        selections.append(
+            ResolvedSelection(
+                material_id=-1,
+                name=base_name or "основа",
+                part="whole",
+                form="na",
+                pit="na",
+                role="base_spirit",
+                inline_contrib=base_contrib,
+                abv=_base_abv(base_name),
+            )
+        )
+    # Користувацькі інгредієнти. Підсолоджувачі відкидаємо — їх заново додасть
+    # крок балансування (щоб доза цукру/меду відповідала новому складу).
+    # Дублікати того самого варіанта сировини не додаємо (задвоївся б внесок);
+    # роль "main" ззовні не приймаємо — основна сировина лише одна.
+    seen_variants: Set[Tuple[int, str, str, str]] = {
+        (s.material_id, s.part, s.form, s.pit) for s in selections
+    }
+    for m in req.materials:
+        if m.material_id <= 0 or m.role == "sweetener":
+            continue
+        key = (m.material_id, m.part, m.form, m.pit)
+        if key in seen_variants:
+            continue
+        seen_variants.add(key)
+        role = m.role if m.role not in ("main", "base_spirit") else "additional"
+        selections.append(
+            ResolvedSelection(
+                material_id=m.material_id,
+                name=_resolve_name(db, m.material_id),
+                part=m.part,
+                form=m.form,
+                pit=m.pit,
+                role=role or "additional",
+            )
+        )
+
+    sel, notes = _finalize(
+        db,
+        selections,
+        desired_set,
+        max_ingredients=MAX_INGREDIENTS,
+        sweetener="auto",
+        base_conflict_chars=base_conflict_chars,
+        forbidden_ids=forbidden_ids,
+        season_blocked_ids=season_blocked_ids,
+        auto_extend=False,
+    )
+    title = req.title or "Відредагована композиція"
+    variant = _make_variant(db, title, sel, desired_names, notes)
+
+    # Сезонні попередження: користувач міг додати в редакторі свіжу сировину
+    # поза сезоном — чесно попереджаємо (як робить generate у банері сезону).
+    if season:
+        seen_oos: Set[int] = set()
+        for s in sel:
+            if (
+                s.material_id > 0
+                and s.form == FORM_FRESH
+                and s.material_id in season_blocked_ids
+                and s.material_id not in seen_oos
+            ):
+                seen_oos.add(s.material_id)
+                suggestion = _preserved_form_suggestion(db, s.material_id)
+                tail = f" — скористайтесь формою «{suggestion}»" if suggestion else ""
+                variant.warnings.append(
+                    f"«{s.name}»: свіжа форма поза сезоном "
+                    f"({seasons.season_name(season)}){tail}."
+                )
+    return variant
+
+
+# --- «Здивуй мене»: автопідбір профілів під основну сировину ------------------
+
+# Скільки нот-кандидатів тримаємо в пулі, скільки трійок реально прораховуємо,
+# і розмір профілю (характеристик на рецепт).
+SURPRISE_POOL = 9
+SURPRISE_EVAL = 9
+SURPRISE_PROFILE_SIZE = 3
+SURPRISE_ATTEMPTS = 3
+# Клеш родин, з якого трійку вважаємо негармонійною і не пропонуємо.
+SURPRISE_CLASH_MIN = 0.4
+# «Здивуй мене» має щоразу давати НОВИЙ підбір. Тому:
+#  - серед найсильніших трійок для прорахунку беремо ширшу «голову» й тасуємо
+#    (щоразу оцінюються трохи інші профілі);
+#  - з результатів лишаємо не строгий топ-3, а 3 ВИПАДКОВІ з-поміж достатньо
+#    якісних (у межах SURPRISE_BAND від найкращого) — оцінки лишаються високими.
+SURPRISE_CANDIDATE_HEAD = 16
+SURPRISE_BAND = 0.12
+# Досяжні «улюблені» ноти — доповнюють ноти самої сировини для різноманіття.
+_SURPRISE_CROWD = [
+    "свіжий", "цитрусовий", "фруктовий", "ягідний", "квітковий",
+    "медовий", "трав'яний", "пряний", "солодкий",
+]
+
+
+def _resolve_base(
+    db: Session, base_id: Optional[int], main_material, audience: Optional[Dict]
+) -> Tuple[Optional[str], Set[str], List[Tuple[str, float, str, str]]]:
+    """Назва основи, її конфліктні ноти та власний внесок у профіль.
+
+    Спільна логіка для recompute/surprise (без банера дистиляту). Для
+    безалкогольної ЦА алкогольну основу відкидаємо.
+    """
+    base_name: Optional[str] = None
+    base_conflict_chars: Set[str] = set()
+    base_contrib: List[Tuple[str, float, str, str]] = []
+    if base_id is not None:
+        base = db.get(Base_, base_id)
+        base_name = base.name if base else None
+        if base_name and base_name in BASE_PROFILES:
+            base_conflict_chars = BASE_PROFILES[base_name]["conflicts"]
+        base_contrib = _base_contribution(db, base_name, main_material)
+    if audience and audience["alcohol_free"] and base_name:
+        is_alcoholic = base_name == DISTILLATE_BASE_NAME or (
+            BASE_PROFILES.get(base_name, {}).get("abv", 0) > 0
+        )
+        if is_alcoholic:
+            return None, set(), []
+    return base_name, base_conflict_chars, base_contrib
+
+
+def _best_variant_for_profile(
+    db: Session,
+    main_material,
+    base_name: Optional[str],
+    base_conflict_chars: Set[str],
+    base_contrib: List[Tuple[str, float, str, str]],
+    desired_names: List[str],
+    forbidden_ids: Set[int],
+    season_blocked_ids: Set[int],
+    additional_materials: Optional[List] = None,
+) -> Optional[Tuple[float, RecipeVariant]]:
+    """Найкращий (за _overall) рецепт під заданий профіль — компактний варіант
+    generate() лише з одним переможцем (для перебору профілів у «Здивуй мене»)."""
+    desired_set = set(desired_names)
+    chosen: List[ResolvedSelection] = [
+        ResolvedSelection(
+            material_id=main_material.material_id,
+            name=_resolve_name(db, main_material.material_id),
+            part=main_material.part,
+            form=main_material.form,
+            pit=main_material.pit,
+            role="main",
+        )
+    ]
+    if base_name:
+        chosen.append(
+            ResolvedSelection(
+                material_id=-1,
+                name=base_name or "основа",
+                part="whole",
+                form="na",
+                pit="na",
+                role="base_spirit",
+                inline_contrib=base_contrib,
+                abv=_base_abv(base_name),
+            )
+        )
+    # Допоміжна сировина користувача — фіксована частина композиції
+    # (дедуплікація за повним варіантом, як у generate).
+    seen_variants: Set[Tuple[int, str, str, str]] = {
+        (s.material_id, s.part, s.form, s.pit) for s in chosen
+    }
+    for add in additional_materials or []:
+        key = (add.material_id, add.part, add.form, add.pit)
+        if key in seen_variants:
+            continue
+        seen_variants.add(key)
+        chosen.append(
+            ResolvedSelection(
+                material_id=add.material_id,
+                name=_resolve_name(db, add.material_id),
+                part=add.part,
+                form=add.form,
+                pit=add.pit,
+                role="additional",
+            )
+        )
+
+    base_profile = _build_profile(db, chosen)
+    base_missing = {n for n in desired_names if base_profile.total(n) <= 0}
+    exclude_ids = {s.material_id for s in chosen}
+    honey_id = _honey_id(db)
+    base_block = exclude_ids | ({honey_id} if honey_id else set()) | forbidden_ids
+
+    pool: List[Tuple[List[ResolvedSelection], List[str]]] = []
+    banned: Set[int] = set()
+    for _ in range(SURPRISE_ATTEMPTS):
+        seed = _greedy_seed(
+            db, chosen, base_missing, base_block | banned, desired_set,
+            MAX_SUGGESTED, season_blocked_ids,
+        )
+        sel, notes = _finalize(
+            db, seed, desired_set,
+            base_conflict_chars=base_conflict_chars,
+            forbidden_ids=forbidden_ids | banned,
+            season_blocked_ids=season_blocked_ids,
+        )
+        added = _addition_ids(sel, exclude_ids)
+        pool.append((sel, notes))
+        if not added:
+            break
+        banned |= added
+
+    lean_sel, lean_notes = _finalize(
+        db, list(chosen), desired_set,
+        max_ingredients=MIN_INGREDIENTS,
+        base_conflict_chars=base_conflict_chars,
+        forbidden_ids=forbidden_ids,
+        season_blocked_ids=season_blocked_ids,
+    )
+    pool.append((lean_sel, lean_notes))
+
+    best: Optional[Tuple[float, RecipeVariant]] = None
+    for sel, notes in pool:
+        v = _make_variant(db, "", sel, desired_names, notes)
+        ov = _overall(v)
+        if best is None or ov > best[0]:
+            best = (ov, v)
+    return best
+
+
+def surprise(db: Session, req: SurpriseRequest) -> GenerateResponse:
+    """Автопідбір 3 рецептів під основну сировину, кожен зі своїм профілем із
+    3 характеристик, з максимізацією збігу+балансу+гармонії."""
+    audience = get_audience(req.audience_id)
+    forbidden_tags: Set[str] = set(audience["forbidden_tags"]) if audience else set()
+    forbidden_ids = _forbidden_material_ids(db, forbidden_tags)
+
+    season = req.season if seasons.is_valid(req.season) else None
+    season_blocked_ids = _out_of_season_fresh_ids(db, season)
+
+    base_name, base_conflict_chars, base_contrib = _resolve_base(
+        db, req.base_id, req.main_material, audience
+    )
+
+    main_id = req.main_material.material_id
+    breakdown = _option_breakdown(db, main_id)
+    chans = breakdown.get(
+        (req.main_material.part, req.main_material.form, req.main_material.pit)
+    )
+    if not chans:  # обраного варіанта нема — беремо найсильніше з усіх
+        chans = {}
+        for c in breakdown.values():
+            for k, v in c.items():
+                chans[k] = max(chans.get(k, 0.0), v)
+
+    # Ароматичні ноти самої сировини (без структурних смаків) — головні «якорі».
+    aroma: Dict[str, float] = defaultdict(float)
+    for key, val in chans.items():
+        chan, name = key.split("::", 1)
+        if chan == "aroma" and name not in _TASTE_AXES:
+            aroma[name] += val
+    material_notes = [
+        n for n, _v in sorted(aroma.items(), key=lambda kv: kv[1], reverse=True)
+    ][:6]
+
+    # Пул = ноти сировини + досяжні «улюблені» доповнення для різноманіття.
+    pool: List[str] = list(material_notes)
+    for n in _SURPRISE_CROWD:
+        if len(pool) >= SURPRISE_POOL:
+            break
+        if n in pool:
+            continue
+        if _note_reachable(
+            db, n, main_id, set(pool) | {n}, forbidden_ids, season_blocked_ids
+        ):
+            pool.append(n)
+    pool = pool[:SURPRISE_POOL]
+
+    # Гармонійні трійки, ранжовані за передбаченою силою (ноти сировини важать
+    # більше — вони дають високий збіг «безкоштовно»).
+    candidate_combos: List[Tuple[float, Tuple[str, ...]]] = []
+    for combo in combinations(pool, SURPRISE_PROFILE_SIZE):
+        fams = [harmony.FAMILY_OF.get(n) for n in combo]
+        clash = False
+        for i in range(len(fams)):
+            for j in range(i + 1, len(fams)):
+                if fams[i] and fams[j]:
+                    sev = harmony.CLASH.get(frozenset((fams[i], fams[j])))
+                    if sev and sev >= SURPRISE_CLASH_MIN:
+                        clash = True
+        if clash:
+            continue
+        pred = sum(aroma.get(n, 0.0) or 0.25 for n in combo)
+        candidate_combos.append((pred, combo))
+    candidate_combos.sort(key=lambda t: t[0], reverse=True)
+    # Тасуємо ширшу «голову» найсильніших трійок — щоразу оцінюємо трохи інші.
+    head = candidate_combos[:SURPRISE_CANDIDATE_HEAD]
+    random.shuffle(head)
+    to_eval = head[:SURPRISE_EVAL]
+
+    id_by_name = {
+        c.name: c.id
+        for c in db.scalars(
+            select(Characteristic).where(Characteristic.name.in_(pool))
+        ).all()
+    }
+
+    evaluated: List[Tuple[float, List[str], RecipeVariant]] = []
+    for _pred, combo in to_eval:
+        ids = [id_by_name[n] for n in combo if n in id_by_name]
+        if len(ids) < SURPRISE_PROFILE_SIZE:
+            continue
+        names = [c.name for c in db.scalars(
+            select(Characteristic).where(Characteristic.id.in_(ids))
+        ).all()]
+        best = _best_variant_for_profile(
+            db, req.main_material, base_name, base_conflict_chars, base_contrib,
+            names, forbidden_ids, season_blocked_ids,
+            additional_materials=req.additional_materials,
+        )
+        if best is None:
+            continue
+        evaluated.append((best[0], list(combo), best[1]))
+
+    evaluated.sort(key=lambda t: t[0], reverse=True)
+    # З-поміж достатньо якісних (у межах SURPRISE_BAND від найкращого) обираємо
+    # ВИПАДКОВО — так повторне натискання дає новий набір без втрати якості.
+    if evaluated:
+        best_ov = evaluated[0][0]
+        band = [e for e in evaluated if e[0] >= best_ov - SURPRISE_BAND]
+        if len(band) < 6:
+            band = evaluated[: max(6, len(band))]
+        random.shuffle(band)
+    else:
+        band = []
+
+    variants: List[RecipeVariant] = []
+    seen_profiles: Set[frozenset] = set()
+    seen_sigs: Set[Tuple] = set()
+    for _ov, prof, v in band:
+        pkey = frozenset(prof)
+        sig = tuple(sorted(
+            (m.material_id, m.part, m.form, m.pit) for m in v.materials
+        ))
+        if pkey in seen_profiles or sig in seen_sigs:
+            continue
+        v.title = "✨ " + " · ".join(prof)
+        seen_profiles.add(pkey)
+        seen_sigs.add(sig)
+        variants.append(v)
+        if len(variants) >= MAX_VARIANTS - 1:  # 3 рецепти
+            break
+
+    base_infl = _base_influence(base_name, set(), variants)
+
+    audience_info: Optional[AudienceInfo] = None
+    if audience:
+        examples: List[str] = []
+        if forbidden_ids:
+            example_ids = list(forbidden_ids)[:6]
+            examples = list(db.scalars(
+                select(RawMaterial.name).where(RawMaterial.id.in_(example_ids))
+            ).all())
+        audience_info = AudienceInfo(
+            id=audience["id"],
+            name=audience["name"],
+            alcohol_free=audience["alcohol_free"],
+            disclaimer=audience["disclaimer"],
+            excluded_examples=sorted(examples),
+            excluded_count=len(forbidden_ids),
+        )
+
+    season_info: Optional[SeasonInfo] = None
+    if season:
+        out_items: List[OutOfSeasonItem] = []
+        seen_oos: Set[int] = set()
+        user_selected = [req.main_material] + list(req.additional_materials)
+        for m in user_selected:
+            if (
+                m.form == FORM_FRESH
+                and m.material_id in season_blocked_ids
+                and m.material_id not in seen_oos
+            ):
+                seen_oos.add(m.material_id)
+                out_items.append(
+                    OutOfSeasonItem(
+                        name=_resolve_name(db, m.material_id),
+                        suggestion=_preserved_form_suggestion(db, m.material_id),
+                    )
+                )
+        season_info = SeasonInfo(
+            id=season,
+            name=seasons.season_name(season),
+            out_of_season=out_items,
+        )
+
+    return GenerateResponse(
+        base=base_name,
+        desired=[],  # профіль свій на кожен рецепт — показуємо у варіантах
+        variants=variants,
+        feasibility=ProfileFeasibility(
+            status="ok",
+            achievable=True,
+            message="Профілі підібрано системою під обрану сировину.",
+        ),
         base_influence=base_infl,
         audience=audience_info,
         season=season_info,

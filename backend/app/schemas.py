@@ -53,6 +53,46 @@ class GenerateRequest(BaseModel):
     season: Optional[str] = None
 
 
+class EditedMaterial(MaterialSelection):
+    # роль зберігаємо, щоб не втратити підпис («підібрана»/«для гармонії» тощо);
+    # користувацькі додавання приходять як "additional"
+    role: str = "additional"
+
+
+class RecomputeRequest(BaseModel):
+    """Перерахунок одного варіанта з відредагованим складом.
+
+    materials — усі НЕосновні й НЕпідсолоджувальні інгредієнти, які користувач
+    залишив/додав. Основна сировина фіксована; підсолоджувач (цукор/мед) та
+    баланс перераховуються автоматично. Нові ароматичні інгредієнти алгоритм
+    сам НЕ додає — склад лишається саме таким, як його зібрав користувач.
+    """
+
+    main_material: MaterialSelection
+    materials: List[EditedMaterial] = Field(default_factory=list, max_length=20)
+    base_id: Optional[int] = None
+    desired_characteristics: List[int] = Field(default_factory=list)
+    audience_id: Optional[str] = None
+    season: Optional[str] = None
+    title: str = ""
+
+
+class SurpriseRequest(BaseModel):
+    """«Здивуй мене»: система сама добирає профілі під основну сировину.
+
+    desired не задається — його генерує двигун (по 3 характеристики на рецепт,
+    можуть різнитися між рецептами), максимізуючи збіг+баланс+гармонію.
+    """
+
+    main_material: MaterialSelection
+    additional_materials: List[MaterialSelection] = Field(
+        default_factory=list, max_length=10
+    )
+    base_id: Optional[int] = None
+    audience_id: Optional[str] = None
+    season: Optional[str] = None
+
+
 class AudienceOut(BaseModel):
     id: str
     name: str
@@ -72,6 +112,8 @@ class SuggestProfileRequest(BaseModel):
     part: Optional[str] = None
     form: Optional[str] = None
     pit: Optional[str] = None
+    # сезон — щоб не пропонувати ноти, досяжні лише позасезонною свіжою сировиною
+    season: Optional[str] = None
 
 
 class SuggestProfileResponse(BaseModel):
@@ -133,6 +175,9 @@ class PyramidLayer(BaseModel):
 
 class RecipeVariant(BaseModel):
     title: str
+    # бажаний профіль саме цього варіанта (для «Здивуй мене» — свій на кожен
+    # рецепт; для звичайної генерації збігається із загальним).
+    desired: List[str] = Field(default_factory=list)
     match_score: float
     balance_score: float
     # гастрономічна гармонія: наскільки поєднання ароматичних родин їстівне
@@ -150,6 +195,8 @@ class RecipeVariant(BaseModel):
     balance_notes: List[str] = Field(default_factory=list)
     explanation: str
     pyramid: List[PyramidLayer] = Field(default_factory=list)
+    # попередження (напр. позасезонна свіжа сировина при перерахунку складу)
+    warnings: List[str] = Field(default_factory=list)
 
 
 class BaseInfluence(BaseModel):

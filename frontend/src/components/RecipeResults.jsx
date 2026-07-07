@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PYRAMID_META, ROLE_LABELS, variantLabel } from "../api";
 import { downloadRecipePdf } from "../recipePdf";
+import VariantEditor from "./VariantEditor";
 
 function ProfileBars({ title, items }) {
   if (!items.length) return null;
@@ -274,8 +275,34 @@ const ROLE_CHIP = {
   base: "border-stone-400 bg-stone-100 text-stone-700",
 };
 
-function VariantCard({ variant, index, desired, radarMax, result }) {
+function VariantCard({
+  variant,
+  index,
+  desired,
+  radarMax,
+  result,
+  request,
+  forbiddenTags,
+  onVariantChange,
+  charIdByName,
+}) {
   const [pdfState, setPdfState] = useState("idle");
+  const [editing, setEditing] = useState(false);
+  const canEdit = Boolean(request && onVariantChange);
+
+  // Профіль саме цього варіанта (для «Здивуй мене» — свій; інакше — загальний).
+  const variantDesired =
+    variant.desired && variant.desired.length ? variant.desired : desired;
+  // Контекст для перерахунку при редагуванні: підставляємо профіль варіанта.
+  const variantRequest = request
+    ? {
+        ...request,
+        desired_characteristics:
+          variant.desired && variant.desired.length && charIdByName
+            ? variant.desired.map((n) => charIdByName[n]).filter((v) => v != null)
+            : request.desired_characteristics,
+      }
+    : null;
 
   async function handlePdf() {
     setPdfState("loading");
@@ -318,31 +345,66 @@ function VariantCard({ variant, index, desired, radarMax, result }) {
         </div>
       </div>
 
-      <div className="mb-4 flex flex-wrap gap-2">
-        {variant.materials.map((m, i) => (
-          <span
-            key={i}
-            className={
-              "rounded-lg border px-3 py-1.5 text-sm " +
-              (ROLE_CHIP[m.role] || "border-stone-200 bg-stone-50 text-stone-700")
-            }
-          >
-            <span className="font-medium">{m.name}</span>
-            <span className="text-xs text-stone-500">
-              {m.role !== "sweetener" ? ` · ${variantLabel(m)}` : ""}
-              {" · "}
-              {ROLE_LABELS[m.role] || m.role}
-              {m.role === "main"
-                ? " · основа"
-                : m.amount != null
-                ? ` · ${Math.round(m.amount * 100)}%`
-                : ""}
-            </span>
-          </span>
-        ))}
-      </div>
+      {editing ? (
+        <VariantEditor
+          variant={variant}
+          request={variantRequest}
+          forbiddenTags={forbiddenTags}
+          onApply={(nv) => {
+            onVariantChange(nv);
+            setEditing(false);
+          }}
+          onCancel={() => setEditing(false)}
+        />
+      ) : (
+        <>
+          <div className="mb-2 flex flex-wrap gap-2">
+            {variant.materials.map((m, i) => (
+              <span
+                key={i}
+                className={
+                  "rounded-lg border px-3 py-1.5 text-sm " +
+                  (ROLE_CHIP[m.role] ||
+                    "border-stone-200 bg-stone-50 text-stone-700")
+                }
+              >
+                <span className="font-medium">{m.name}</span>
+                <span className="text-xs text-stone-500">
+                  {m.role !== "sweetener" ? ` · ${variantLabel(m)}` : ""}
+                  {" · "}
+                  {ROLE_LABELS[m.role] || m.role}
+                  {m.role === "main"
+                    ? " · основа"
+                    : m.amount != null
+                    ? ` · ${Math.round(m.amount * 100)}%`
+                    : ""}
+                </span>
+              </span>
+            ))}
+          </div>
+          {canEdit && (
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              className="mb-4 inline-flex items-center gap-1.5 rounded-full border border-stone-300 px-3 py-1 text-xs font-medium text-stone-600 transition hover:border-charka-400 hover:text-charka-700"
+            >
+              <span aria-hidden>✎</span> Редагувати склад
+            </button>
+          )}
+        </>
+      )}
 
       <p className="mb-3 text-sm text-stone-600">{variant.explanation}</p>
+
+      {variant.warnings?.length > 0 && (
+        <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3">
+          <ul className="flex flex-col gap-0.5 text-sm text-amber-800">
+            {variant.warnings.map((w, i) => (
+              <li key={i}>⚠️ {w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {variant.harmony_score != null && variant.harmony_score < 0.85 && (
         <div
@@ -393,7 +455,7 @@ function VariantCard({ variant, index, desired, radarMax, result }) {
       )}
 
       <div className="mb-4 grid gap-4 lg:grid-cols-2">
-        <ProfileRadar variant={variant} desired={desired} scaleMax={radarMax} />
+        <ProfileRadar variant={variant} desired={variantDesired} scaleMax={radarMax} />
         <div className="flex flex-col gap-4">
           <ProfileBars title="Аромат" items={variant.aroma_profile} />
           <ProfileBars title="Смак" items={variant.taste_profile} />
@@ -541,9 +603,26 @@ function AudienceBanner({ audience }) {
   );
 }
 
-export default function RecipeResults({ result }) {
+export default function RecipeResults({
+  result,
+  request,
+  forbiddenTags,
+  charIdByName,
+}) {
+  const [variants, setVariants] = useState(result ? result.variants : []);
+  useEffect(() => {
+    setVariants(result ? result.variants : []);
+  }, [result]);
+
   if (!result) return null;
-  const radarMax = radarScaleMax(result.variants);
+  const radarMax = radarScaleMax(variants);
+
+  function handleVariantChange(index, newVariant) {
+    setVariants((prev) =>
+      prev.map((v, i) => (i === index ? newVariant : v))
+    );
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <div className="text-sm text-stone-500">
@@ -551,14 +630,16 @@ export default function RecipeResults({ result }) {
         {" · "}
         Бажаний профіль:{" "}
         <span className="font-medium text-stone-700">
-          {result.desired.join(", ") || "не задано"}
+          {result.desired.length
+            ? result.desired.join(", ")
+            : "✨ підібрано системою (свій на кожен рецепт)"}
         </span>
       </div>
       <AudienceBanner audience={result.audience} />
       <SeasonBanner season={result.season} />
       <BaseInfluenceBanner influence={result.base_influence} />
       <FeasibilityBanner feasibility={result.feasibility} />
-      {result.variants.map((v, i) => (
+      {variants.map((v, i) => (
         <VariantCard
           key={i}
           variant={v}
@@ -566,6 +647,10 @@ export default function RecipeResults({ result }) {
           desired={result.desired}
           radarMax={radarMax}
           result={result}
+          request={request}
+          forbiddenTags={forbiddenTags}
+          charIdByName={charIdByName}
+          onVariantChange={(nv) => handleVariantChange(i, nv)}
         />
       ))}
     </div>

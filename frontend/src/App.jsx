@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, NON_ALCOHOLIC_BASES } from "./api";
+import { api, NON_ALCOHOLIC_BASES, currentSeason } from "./api";
 import logo from "./assets/logo.png";
 import MaterialAutocomplete from "./components/MaterialAutocomplete";
 import AdditionalMaterials from "./components/AdditionalMaterials";
 import AudienceSelector from "./components/AudienceSelector";
+import SeasonSelector from "./components/SeasonSelector";
 import BaseSelector from "./components/BaseSelector";
 import ProfileSelector from "./components/ProfileSelector";
 import RecipeResults from "./components/RecipeResults";
@@ -31,6 +32,7 @@ export default function App() {
   const [audiences, setAudiences] = useState([]);
 
   const [audienceId, setAudienceId] = useState("adults");
+  const [season, setSeason] = useState(() => currentSeason());
   const [mainMaterial, setMainMaterial] = useState(null);
   const [additional, setAdditional] = useState([]);
   const [baseId, setBaseId] = useState(null);
@@ -127,6 +129,7 @@ export default function App() {
         base_id: baseId,
         desired_characteristics: desired,
         audience_id: audienceId,
+        season,
       };
       const res = await api.generate(payload);
       setResult(res);
@@ -171,6 +174,14 @@ export default function App() {
 
         <Section
           step={2}
+          title="Сезон"
+          hint="Свіжа сировина поза сезоном не пропонується автоматично; якщо ви оберете її самі — підкажемо «зимову» форму (сушена/екстракт)."
+        >
+          <SeasonSelector value={season} onChange={setSeason} />
+        </Section>
+
+        <Section
+          step={3}
           title="Основна сировина"
           hint="Почніть вводити назву — підкаже по перших літерах."
         >
@@ -182,7 +193,7 @@ export default function App() {
         </Section>
 
         <Section
-          step={3}
+          step={4}
           title="Допоміжна сировина"
           hint="Необов'язково. До 10 рядків, кожен з формою та (за потреби) кісточкою."
         >
@@ -193,7 +204,7 @@ export default function App() {
           />
         </Section>
 
-        <Section step={4} title="Основа напою">
+        <Section step={5} title="Основа напою">
           <BaseSelector
             bases={bases}
             value={baseId}
@@ -204,7 +215,7 @@ export default function App() {
         </Section>
 
         <Section
-          step={5}
+          step={6}
           title="Бажаний профіль напою"
           hint={
             audience?.suggest

@@ -48,6 +48,23 @@ export const TAG_LABELS = {
   caffeine: "містить кофеїн",
 };
 
+// Сезони (співпадають з backend/app/seasons.py). null — «не враховувати».
+export const SEASONS = [
+  { id: "spring", label: "Весна", emoji: "🌸" },
+  { id: "summer", label: "Літо", emoji: "☀️" },
+  { id: "autumn", label: "Осінь", emoji: "🍂" },
+  { id: "winter", label: "Зима", emoji: "❄️" },
+];
+
+// Поточний сезон за датою (північна півкуля) — дефолтний вибір.
+export function currentSeason(date = new Date()) {
+  const m = date.getMonth() + 1;
+  if (m >= 3 && m <= 5) return "spring";
+  if (m >= 6 && m <= 8) return "summer";
+  if (m >= 9 && m <= 11) return "autumn";
+  return "winter";
+}
+
 export const FORM_LABELS = {
   fresh: "свіжа",
   dry: "суха",

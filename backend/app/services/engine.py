@@ -22,6 +22,11 @@ from ..models import (
     Base_,
     Characteristic,
     CompoundCharacteristic,
+    FORM_DRY,
+    FORM_EXTRACT,
+    FORM_FRESH,
+    FORM_JUICE,
+    FORM_OIL,
     KIND_AROMA,
     KIND_BOTH,
     KIND_TASTE,
@@ -32,6 +37,8 @@ from ..models import (
     VOL_TOP,
 )
 from ..audiences import get_audience
+from .. import seasons
+from .. import harmony
 from ..schemas import (
     AudienceInfo,
     BaseInfluence,
@@ -40,9 +47,11 @@ from ..schemas import (
     GenerateRequest,
     GenerateResponse,
     MaterialInComposition,
+    OutOfSeasonItem,
     PyramidLayer,
     ProfileFeasibility,
     RecipeVariant,
+    SeasonInfo,
     SuggestProfileResponse,
 )
 
@@ -115,6 +124,21 @@ KIN: Dict[str, Dict[str, float]] = {
         "охолоджуючий": 0.6,
         "евкаліптовий": 0.5,
         "камфорний": 0.4,
+    },
+    # трав'яний невіддільний від зелено-сінних та смолисто-хвойних «родичів»:
+    # мірцен (хміль) тягне хвойний/ялівцевий, азулен (ромашка) — бальзамічний.
+    # Без цього будь-яка справжня трав'яна сировина відкидається як «шумна».
+    "трав'яний": {
+        "зелений": 0.7,
+        "сінний": 0.6,
+        "бальзамічний": 0.5,
+        "ялівцевий": 0.5,
+        "анісовий": 0.4,
+        "камфорний": 0.4,
+        "хвойний": 0.4,
+        "евкаліптовий": 0.4,
+        "деревинний": 0.3,
+        "смолистий": 0.3,
     },
 }
 
@@ -460,6 +484,41 @@ def _forbidden_material_ids(db: Session, forbidden_tags: Set[str]) -> Set[int]:
     return out
 
 
+def _out_of_season_fresh_ids(db: Session, season: Optional[str]) -> Set[int]:
+    """ID сировини, чия СВІЖА форма недоступна в заданий сезон.
+
+    Сезонність стосується лише свіжої форми — інші форми (сушена/екстракт/сік)
+    лишаються дозволеними. Тому ці id блокуються тільки для form == fresh.
+    """
+    if not seasons.is_valid(season):
+        return set()
+    out: Set[int] = set()
+    rows = db.execute(select(RawMaterial.id, RawMaterial.name)).all()
+    for mid, name in rows:
+        if not seasons.fresh_in_season(name, season):
+            out.add(mid)
+    return out
+
+
+# Підказка, якою формою замінити позасезонну свіжу сировину (за пріоритетом).
+_PRESERVED_FORM_LABEL = {
+    FORM_DRY: "сушена",
+    FORM_EXTRACT: "екстракт",
+    FORM_JUICE: "сік",
+    FORM_OIL: "олія",
+}
+_PRESERVED_FORM_ORDER = (FORM_DRY, FORM_EXTRACT, FORM_JUICE, FORM_OIL)
+
+
+def _preserved_form_suggestion(db: Session, material_id: int) -> Optional[str]:
+    """Людська назва доступної несвіжої форми сировини (суха/екстракт/сік)."""
+    forms = {form for (_part, form, _pit) in _option_breakdown(db, material_id)}
+    for f in _PRESERVED_FORM_ORDER:
+        if f in forms:
+            return _PRESERVED_FORM_LABEL[f]
+    return None
+
+
 # Смакові осі — не використовуються як «ідентичність» основної сировини при
 # доборі авто-профілю (вони покриваються базовими нотами/балансом).
 _TASTE_AXES = {SWEET, SOUR, BITTER, ASTRINGENT, PUNGENT}
@@ -633,7 +692,11 @@ def _dose(
 
 
 def _find_candidates(
-    db: Session, missing_names: Set[str], exclude_ids: Set[int], desired_set: Set[str]
+    db: Session,
+    missing_names: Set[str],
+    exclude_ids: Set[int],
+    desired_set: Set[str],
+    season_blocked_ids: Set[int] = frozenset(),
 ) -> List[Tuple[int, str, str, str, float, Set[str]]]:
     """Кандидати, що закривають прогалини профілю з мінімумом сторонніх нот.
 
@@ -665,6 +728,8 @@ def _find_candidates(
     for mid in material_ids:
         best: Optional[Tuple[Tuple[int, float], str, str, str, float, Set[str]]] = None
         for (part, form, pit), chans in _option_breakdown(db, mid).items():
+            if form == FORM_FRESH and mid in season_blocked_ids:
+                continue  # свіжа форма поза сезоном — не пропонуємо
             covered = {
                 key.split("::", 1)[1]
                 for key, value in chans.items()
@@ -721,7 +786,11 @@ def _option_breakdown(
 
 
 def _find_taste_provider(
-    db: Session, needed_char: str, exclude_ids: Set[int], avoid_chars: Set[str]
+    db: Session,
+    needed_char: str,
+    exclude_ids: Set[int],
+    avoid_chars: Set[str],
+    season_blocked_ids: Set[int] = frozenset(),
 ) -> Optional[Tuple[int, str, str, str]]:
     """Сировина, що дає потрібний СМАК (needed_char) з мінімумом небажаних смаків.
 
@@ -748,6 +817,8 @@ def _find_taste_provider(
     best: Optional[Tuple[int, str, str, str, float]] = None
     for mid in material_ids:
         for (part, form, pit), chans in _option_breakdown(db, mid).items():
+            if form == FORM_FRESH and mid in season_blocked_ids:
+                continue
             need = chans.get(f"taste::{needed_char}", 0.0)
             if need <= 0:
                 continue
@@ -761,7 +832,11 @@ def _find_taste_provider(
 
 
 def _best_for_char(
-    db: Session, char: str, exclude_ids: Set[int], desired_set: Set[str]
+    db: Session,
+    char: str,
+    exclude_ids: Set[int],
+    desired_set: Set[str],
+    season_blocked_ids: Set[int] = frozenset(),
 ) -> Optional[Tuple[int, str, str, str, float]]:
     """Сировина, що дає НАЙБІЛЬШЕ саме характеристики `char` (аромат+смак),
     майже не шумлячи (net > 0). Повертає (mid, part, form, pit, char_value).
@@ -789,6 +864,8 @@ def _best_for_char(
     best_key: Optional[Tuple[float, float]] = None
     for mid in material_ids:
         for (part, form, pit), chans in _option_breakdown(db, mid).items():
+            if form == FORM_FRESH and mid in season_blocked_ids:
+                continue
             tval = chans.get(f"aroma::{char}", 0.0) + chans.get(f"taste::{char}", 0.0)
             if tval <= 0:
                 continue
@@ -805,7 +882,10 @@ def _best_for_char(
 
 
 def _find_harmony(
-    db: Session, desired_set: Set[str], exclude_ids: Set[int]
+    db: Session,
+    desired_set: Set[str],
+    exclude_ids: Set[int],
+    season_blocked_ids: Set[int] = frozenset(),
 ) -> Optional[Tuple[int, str, str, str, bool]]:
     """Сировина для гармонії (мін. інгредієнтів): підсилює профіль, не додає гіркоти.
 
@@ -817,6 +897,8 @@ def _find_harmony(
     best: Optional[Tuple[int, str, str, str, bool, float]] = None
     for mid in material_ids:
         for (part, form, pit), chans in _option_breakdown(db, mid).items():
+            if form == FORM_FRESH and mid in season_blocked_ids:
+                continue
             harsh = sum(chans.get(f"taste::{a}", 0.0) for a in HARSH_AXES)
             if harsh > 0.4:
                 continue  # не додаємо гострих смаків заради кількості
@@ -843,6 +925,7 @@ def _finalize(
     sweetener: str = "auto",  # auto | honey | sugar
     base_conflict_chars: Set[str] = frozenset(),
     forbidden_ids: Set[int] = frozenset(),
+    season_blocked_ids: Set[int] = frozenset(),
 ) -> Tuple[List[ResolvedSelection], List[str]]:
     """Дозування інгредієнтів + балансування смаку + мінімум інгредієнтів.
 
@@ -912,7 +995,9 @@ def _finalize(
         # 1а) прицільно підсилюємо найслабшу бажану ноту — лише якщо знайдена
         #     сировина РЕАЛЬНО дає достатньо саме цієї ноти (а не мізер).
         if target_char is not None:
-            cand = _best_for_char(db, target_char, block, effective_desired)
+            cand = _best_for_char(
+                db, target_char, block, effective_desired, season_blocked_ids
+            )
             if cand is not None and cand[4] >= MIN_REINFORCE:
                 mid, part, form, pit = cand[0], cand[1], cand[2], cand[3]
                 reinforced_char = target_char
@@ -923,7 +1008,7 @@ def _finalize(
                     continue  # мінімум набрано — не додаємо «порожній» інгредієнт
         # 1б) для добору мінімуму — будь-який чистий гармонійний інгредієнт
         if mid is None:
-            harm = _find_harmony(db, effective_desired, block)
+            harm = _find_harmony(db, effective_desired, block, season_blocked_ids)
             if harm is None:
                 break
             mid, part, form, pit, _reinf = harm
@@ -950,7 +1035,9 @@ def _finalize(
         prof = _build_profile(db, selections)
         if prof.layer_total(VOL_BASE) < BASE_MIN:
             block = used | honey_block
-            for c in _find_candidates(db, effective_desired, block, effective_desired):
+            for c in _find_candidates(
+                db, effective_desired, block, effective_desired, season_blocked_ids
+            ):
                 if c[4] <= 0:  # шумна — пропускаємо
                     continue
                 if _option_layer(db, c[0], c[1], c[2], c[3]) != VOL_BASE:
@@ -1066,7 +1153,9 @@ def _finalize(
         and all(harsh_vals[a] < 0.2 for a in HARSH_AXES)
         and SWEET not in desired_set
     ):
-        prov = _find_taste_provider(db, SOUR, used, set(HARSH_AXES))
+        prov = _find_taste_provider(
+            db, SOUR, used, set(HARSH_AXES), season_blocked_ids
+        )
         if prov:
             mid, part, form, pit = prov
             selections.append(
@@ -1140,6 +1229,13 @@ def _make_variant(
     desired_set = set(desired_names)
     score = _score(profile, desired_names)
     balance = _balance_score(profile)
+    # Гастрономічна гармонія: сумісність ароматичних родин (аромат+смак разом).
+    merged_totals: Dict[str, float] = defaultdict(float)
+    for name, value in profile.aroma.items():
+        merged_totals[name] += value
+    for name, value in profile.taste.items():
+        merged_totals[name] += value
+    harmony_res = harmony.score_harmony(merged_totals)
     covered = [n for n in desired_names if profile.total(n) >= COVERED_MIN]
     missing = [n for n in desired_names if profile.total(n) < COVERED_MIN]
     weak = [n for n in covered if profile.total(n) < WEAK_CEIL]
@@ -1180,12 +1276,24 @@ def _make_variant(
         parts.append("Смак (рівновага солодке/кисле/гірке) збалансований.")
     else:
         parts.append("Смак вимагав корекції балансу.")
+    # Гармонія — про те, чи поєднання смачне, а не лише збалансоване.
+    if harmony_res.score >= 0.85:
+        parts.append("Ароматичні родини поєднуються гармонійно.")
+    elif harmony_res.score >= 0.6:
+        parts.append("Є легкий дисонанс між ароматичними родинами.")
+    else:
+        parts.append(
+            "Увага: поєднання ароматичних родин дисонує — збалансовано за "
+            "смаковими осями, але навряд чи буде смачним."
+        )
     explanation = " ".join(parts)
 
     return RecipeVariant(
         title=title,
         match_score=score,
         balance_score=balance,
+        harmony_score=harmony_res.score,
+        harmony_notes=harmony_res.notes,
         materials=materials,
         aroma_profile=_profile_scores(profile, profile.aroma, desired_set),
         taste_profile=_profile_scores(profile, profile.taste, desired_set),
@@ -1200,7 +1308,15 @@ def _make_variant(
 
 
 def _overall(variant: RecipeVariant) -> float:
-    return 0.6 * variant.match_score + 0.4 * variant.balance_score
+    # Гармонія враховується як окремий доданок (щоб дисонансні композиції не
+    # спливали нагору лише через збіг/баланс) і додатково як множник —
+    # відверто несмачне поєднання «садить» усю оцінку.
+    base = (
+        0.5 * variant.match_score
+        + 0.2 * variant.balance_score
+        + 0.3 * variant.harmony_score
+    )
+    return round(base * (0.4 + 0.6 * variant.harmony_score), 4)
 
 
 def _feasibility(
@@ -1405,13 +1521,14 @@ def _greedy_seed(
     exclude: Set[int],
     desired_set: Set[str],
     max_suggested: int,
+    season_blocked_ids: Set[int] = frozenset(),
 ) -> List[ResolvedSelection]:
     """Заготовка: обрана сировина + закриття прогалин профілю чистими кандидатами
     (поза `exclude`). `exclude` містить уже використане/заборонене/«забанене»."""
     seed = list(chosen)
     if not base_missing:
         return seed
-    candidates = _find_candidates(db, base_missing, exclude, desired_set)
+    candidates = _find_candidates(db, base_missing, exclude, desired_set, season_blocked_ids)
     still = set(base_missing)
     used = set(exclude)
     added = 0
@@ -1472,6 +1589,10 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
         set(audience["forbidden_tags"]) if audience else set()
     )
     forbidden_ids = _forbidden_material_ids(db, forbidden_tags)
+
+    # Сезонність: блокуємо лише СВІЖУ форму позасезонної сировини при авто-доборі.
+    season = req.season if seasons.is_valid(req.season) else None
+    season_blocked_ids = _out_of_season_fresh_ids(db, season)
 
     base_name: Optional[str] = None
     base_conflict_chars: Set[str] = set()
@@ -1562,13 +1683,15 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
     banned: Set[int] = set()
     for _ in range(DIVERSE_ATTEMPTS):
         seed = _greedy_seed(
-            db, chosen, base_missing, base_block | banned, desired_set, MAX_SUGGESTED
+            db, chosen, base_missing, base_block | banned, desired_set, MAX_SUGGESTED,
+            season_blocked_ids,
         )
         sel, notes = _finalize(
             db, seed, desired_set,
             max_ingredients=MAX_INGREDIENTS, sweetener="auto",
             base_conflict_chars=base_conflict_chars,
             forbidden_ids=forbidden_ids | banned,
+            season_blocked_ids=season_blocked_ids,
         )
         added = _addition_ids(sel, exclude_ids)
         pool.append((sel, notes, added))
@@ -1582,6 +1705,7 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
         max_ingredients=MIN_INGREDIENTS, sweetener="auto",
         base_conflict_chars=base_conflict_chars,
         forbidden_ids=forbidden_ids,
+        season_blocked_ids=season_blocked_ids,
     )
     pool.append((lean_sel, lean_notes, _addition_ids(lean_sel, exclude_ids)))
 
@@ -1653,6 +1777,32 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
             excluded_count=len(forbidden_ids),
         )
 
+    # Сезонність: попередження про обрану користувачем свіжу сировину поза сезоном
+    # (її не відкидаємо — лише радимо «зимову» форму).
+    season_info: Optional[SeasonInfo] = None
+    if season:
+        out_items: List[OutOfSeasonItem] = []
+        seen_oos: Set[int] = set()
+        for s in chosen:
+            if (
+                s.role in ("main", "additional")
+                and s.form == FORM_FRESH
+                and s.material_id in season_blocked_ids
+                and s.material_id not in seen_oos
+            ):
+                seen_oos.add(s.material_id)
+                out_items.append(
+                    OutOfSeasonItem(
+                        name=s.name,
+                        suggestion=_preserved_form_suggestion(db, s.material_id),
+                    )
+                )
+        season_info = SeasonInfo(
+            id=season,
+            name=seasons.season_name(season),
+            out_of_season=out_items,
+        )
+
     return GenerateResponse(
         base=base_name,
         desired=desired_names,
@@ -1660,4 +1810,5 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
         feasibility=feasibility,
         base_influence=base_infl,
         audience=audience_info,
+        season=season_info,
     )

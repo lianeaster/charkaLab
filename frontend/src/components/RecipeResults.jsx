@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { PYRAMID_META, ROLE_LABELS, variantLabel } from "../api";
+import { downloadRecipePdf } from "../recipePdf";
 
 function ProfileBars({ title, items }) {
   if (!items.length) return null;
@@ -187,6 +189,24 @@ function BalanceBadge({ score }) {
   );
 }
 
+function HarmonyBadge({ score }) {
+  const pct = Math.round((score ?? 1) * 100);
+  const color =
+    pct >= 85
+      ? "bg-emerald-600 text-white"
+      : pct >= 60
+      ? "bg-amber-200 text-amber-800"
+      : "bg-red-500 text-white";
+  return (
+    <span
+      title="Гастрономічна гармонія: чи поєднання ароматичних родин їстівне (а не лише збалансоване за смаковими осями)"
+      className={`rounded-full px-3 py-1 text-sm font-semibold ${color}`}
+    >
+      {pct}% гармонія смаку
+    </span>
+  );
+}
+
 const LAYER_STYLE = {
   top: "border-charka-200 bg-charka-50",
   heart: "border-wine-300 bg-wine-50",
@@ -254,7 +274,21 @@ const ROLE_CHIP = {
   base: "border-stone-400 bg-stone-100 text-stone-700",
 };
 
-function VariantCard({ variant, index, desired, radarMax }) {
+function VariantCard({ variant, index, desired, radarMax, result }) {
+  const [pdfState, setPdfState] = useState("idle");
+
+  async function handlePdf() {
+    setPdfState("loading");
+    try {
+      await downloadRecipePdf(result, variant, index);
+      setPdfState("idle");
+    } catch (e) {
+      console.error("PDF export failed", e);
+      setPdfState("error");
+      setTimeout(() => setPdfState("idle"), 3000);
+    }
+  }
+
   return (
     <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
       <div className="mb-3 flex items-start justify-between gap-3">
@@ -267,6 +301,20 @@ function VariantCard({ variant, index, desired, radarMax }) {
         <div className="flex shrink-0 flex-col items-end gap-1.5">
           <ScoreBadge score={variant.match_score} />
           <BalanceBadge score={variant.balance_score} />
+          <HarmonyBadge score={variant.harmony_score} />
+          <button
+            type="button"
+            onClick={handlePdf}
+            disabled={pdfState === "loading"}
+            className="mt-1 inline-flex items-center gap-1.5 rounded-full border border-stone-300 px-3 py-1 text-xs font-medium text-stone-600 transition hover:border-charka-400 hover:text-charka-700 disabled:opacity-50"
+          >
+            <span aria-hidden>⬇</span>
+            {pdfState === "loading"
+              ? "Готуємо…"
+              : pdfState === "error"
+              ? "Помилка, ще раз"
+              : "Зберегти PDF"}
+          </button>
         </div>
       </div>
 
@@ -295,6 +343,39 @@ function VariantCard({ variant, index, desired, radarMax }) {
       </div>
 
       <p className="mb-3 text-sm text-stone-600">{variant.explanation}</p>
+
+      {variant.harmony_score != null && variant.harmony_score < 0.85 && (
+        <div
+          className={
+            "mb-4 rounded-lg border p-3 " +
+            (variant.harmony_score < 0.6
+              ? "border-red-300 bg-red-50"
+              : "border-amber-300 bg-amber-50")
+          }
+        >
+          <h4
+            className={
+              "mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide " +
+              (variant.harmony_score < 0.6 ? "text-red-700" : "text-amber-800")
+            }
+          >
+            <span aria-hidden>{variant.harmony_score < 0.6 ? "⛔" : "⚠️"}</span>
+            Гастрономічна гармонія
+          </h4>
+          <p className="text-sm text-stone-700">
+            {variant.harmony_score < 0.6
+              ? "Композиція збалансована за смаковими осями, але поєднання смаків дисонує — навряд чи буде смачною."
+              : "Легкий дисонанс між ароматичними родинами — смак може вийти неоднозначним."}
+          </p>
+          {variant.harmony_notes?.length > 0 && (
+            <ul className="mt-1.5 flex flex-col gap-0.5 text-sm text-stone-600">
+              {variant.harmony_notes.map((n, i) => (
+                <li key={i}>• {n}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       <Pyramid pyramid={variant.pyramid} />
 
@@ -395,6 +476,43 @@ function FeasibilityBanner({ feasibility }) {
   );
 }
 
+function SeasonBanner({ season }) {
+  if (!season) return null;
+  const oos = season.out_of_season || [];
+  return (
+    <div className="rounded-2xl border border-stone-200 bg-stone-50 p-4 text-sm text-stone-700">
+      <div className="font-semibold text-stone-800">Сезон: {season.name}</div>
+      {oos.length > 0 ? (
+        <div className="mt-1">
+          <p className="text-amber-800">
+            Поза сезоном (свіжа форма зараз недоступна):
+          </p>
+          <ul className="mt-1 flex flex-col gap-0.5">
+            {oos.map((it, i) => (
+              <li key={i}>
+                • <span className="font-medium">{it.name}</span>
+                {it.suggestion ? (
+                  <span className="text-stone-500">
+                    {" "}
+                    — краще взяти форму «{it.suggestion}»
+                  </span>
+                ) : (
+                  <span className="text-stone-500"> — зараз недоступна</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <p className="mt-1 text-stone-500">
+          Уся обрана сировина доступна у цьому сезоні; підбір — лише з сезонних
+          інгредієнтів.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function AudienceBanner({ audience }) {
   if (!audience || (!audience.disclaimer && audience.excluded_count === 0)) {
     return null;
@@ -437,6 +555,7 @@ export default function RecipeResults({ result }) {
         </span>
       </div>
       <AudienceBanner audience={result.audience} />
+      <SeasonBanner season={result.season} />
       <BaseInfluenceBanner influence={result.base_influence} />
       <FeasibilityBanner feasibility={result.feasibility} />
       {result.variants.map((v, i) => (
@@ -446,6 +565,7 @@ export default function RecipeResults({ result }) {
           index={i}
           desired={result.desired}
           radarMax={radarMax}
+          result={result}
         />
       ))}
     </div>

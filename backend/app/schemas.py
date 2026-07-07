@@ -49,6 +49,8 @@ class GenerateRequest(BaseModel):
     base_id: Optional[int] = None
     desired_characteristics: List[int] = Field(default_factory=list)
     audience_id: Optional[str] = None
+    # сезон (spring|summer|autumn|winter); None — не враховувати сезонність
+    season: Optional[str] = None
 
 
 class AudienceOut(BaseModel):
@@ -87,6 +89,20 @@ class AudienceInfo(BaseModel):
     excluded_count: int = 0
 
 
+class OutOfSeasonItem(BaseModel):
+    name: str
+    # людська підказка, чим замінити позасезонну свіжу форму (суха/екстракт/сік),
+    # або None — якщо консервованої форми немає
+    suggestion: Optional[str] = None
+
+
+class SeasonInfo(BaseModel):
+    id: str
+    name: str
+    # обрана користувачем свіжа сировина, що поза сезоном (попередження)
+    out_of_season: List[OutOfSeasonItem] = Field(default_factory=list)
+
+
 class CompoundContribution(BaseModel):
     compound: str
     kind: str
@@ -119,6 +135,11 @@ class RecipeVariant(BaseModel):
     title: str
     match_score: float
     balance_score: float
+    # гастрономічна гармонія: наскільки поєднання ароматичних родин їстівне
+    # (1.0 — жодних дисонансів). На відміну від balance_score (рівновага осей),
+    # ловить конфлікти на кшталт «часник + полуниця».
+    harmony_score: float = 1.0
+    harmony_notes: List[str] = Field(default_factory=list)
     materials: List[MaterialInComposition]
     aroma_profile: List[CharacteristicScore]
     taste_profile: List[CharacteristicScore]
@@ -160,3 +181,4 @@ class GenerateResponse(BaseModel):
     feasibility: ProfileFeasibility = Field(default_factory=ProfileFeasibility)
     base_influence: Optional[BaseInfluence] = None
     audience: Optional[AudienceInfo] = None
+    season: Optional[SeasonInfo] = None

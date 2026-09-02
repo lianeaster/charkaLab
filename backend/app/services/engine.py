@@ -41,6 +41,7 @@ from ..models import (
 from ..audiences import get_audience
 from .. import seasons
 from .. import harmony
+from . import similarity
 from ..schemas import (
     AudienceInfo,
     BaseInfluence,
@@ -1941,6 +1942,11 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
             if len(unique) >= 2:
                 break
 
+    # Веб-пошук на схожість із відомими рецептами/комерційними напоями —
+    # лише для фінальних відібраних варіантів (не для всього пулу кандидатів).
+    for v in unique:
+        similarity.check(v, base_name)
+
     feasibility = _feasibility(db, chosen, desired_names, unique, forbidden_ids)
     base_infl = _base_influence(
         base_name, desired_set, unique, dynamic_bp=distillate_bp
@@ -2105,6 +2111,7 @@ def recompute(db: Session, req: RecomputeRequest) -> RecipeVariant:
     )
     title = req.title or "Відредагована композиція"
     variant = _make_variant(db, title, sel, desired_names, notes)
+    similarity.check(variant, base_name)
 
     # Сезонні попередження: користувач міг додати в редакторі свіжу сировину
     # поза сезоном — чесно попереджаємо (як робить generate у банері сезону).
@@ -2400,6 +2407,9 @@ def surprise(db: Session, req: SurpriseRequest) -> GenerateResponse:
         variants.append(v)
         if len(variants) >= MAX_VARIANTS - 1:  # 3 рецепти
             break
+
+    for v in variants:
+        similarity.check(v, base_name)
 
     base_infl = _base_influence(base_name, set(), variants)
 

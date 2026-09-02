@@ -173,6 +173,19 @@ class PyramidLayer(BaseModel):
     notes: List[CharacteristicScore] = Field(default_factory=list)
 
 
+class RecipeSimilarity(BaseModel):
+    """Схожість композиції з відомою рецептурою (див. services/similarity.py).
+    Присутня лише коли схожість перевищує поріг — щоб не засмічувати відповідь
+    випадковими збігами."""
+
+    percent: int
+    # назва впізнаного напою («Джин (London Dry)»)
+    drink: str = ""
+    # сировина композиції, що входить і до характерного складу цього напою
+    matched: List[str] = Field(default_factory=list)
+    note: str = ""
+
+
 class RecipeVariant(BaseModel):
     title: str
     # бажаний профіль саме цього варіанта (для «Здивуй мене» — свій на кожен
@@ -197,6 +210,9 @@ class RecipeVariant(BaseModel):
     pyramid: List[PyramidLayer] = Field(default_factory=list)
     # попередження (напр. позасезонна свіжа сировина при перерахунку складу)
     warnings: List[str] = Field(default_factory=list)
+    # схожі відомі рецептури (від найближчої); порожньо — нічого не впізнано.
+    # Композиція може нагадувати кілька напоїв, тож це список, а не один збіг.
+    similarities: List[RecipeSimilarity] = Field(default_factory=list)
 
 
 class BaseInfluence(BaseModel):

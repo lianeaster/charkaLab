@@ -406,6 +406,29 @@ function VariantCard({
         </div>
       )}
 
+      {variant.similarities?.length > 0 && (
+        <div className="mb-4 rounded-lg border border-sky-300 bg-sky-50 p-3">
+          <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-800">
+            <span aria-hidden>🔎</span> Схожість з наявними рецептами
+          </h4>
+          <div className="flex flex-col gap-3">
+            {variant.similarities.map((sim, i) => (
+              <div key={i} className={i > 0 ? "border-t border-sky-200 pt-3" : ""}>
+                <p className="mb-1 flex flex-wrap items-baseline gap-x-2 text-sm">
+                  <span className="text-base font-semibold text-sky-900">
+                    {sim.drink}
+                  </span>
+                  <span className="rounded-full bg-sky-200/70 px-2 py-0.5 text-xs font-semibold text-sky-900">
+                    {sim.percent}%
+                  </span>
+                </p>
+                <p className="text-sm text-stone-700">{sim.note}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {variant.harmony_score != null && variant.harmony_score < 0.85 && (
         <div
           className={

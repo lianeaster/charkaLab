@@ -8,6 +8,7 @@ import SeasonSelector from "./components/SeasonSelector";
 import BaseSelector from "./components/BaseSelector";
 import ProfileSelector from "./components/ProfileSelector";
 import RecipeResults from "./components/RecipeResults";
+import InfoTip from "./components/InfoTip";
 
 function Section({ step, title, hint, children }) {
   return (
@@ -250,24 +251,30 @@ export default function App() {
 
       <div className="flex flex-col gap-4">
         {result && (
-          <button
-            type="button"
-            onClick={() => setParamsOpen((o) => !o)}
-            aria-expanded={paramsOpen}
-            className="flex w-full items-center gap-3 rounded-2xl border border-stone-200 bg-white px-5 py-3 text-left shadow-sm transition hover:border-charka-300"
-          >
-            <span className="shrink-0 text-sm font-semibold text-stone-800">
-              Параметри напою
-            </span>
-            {!paramsOpen && paramsSummary && (
-              <span className="min-w-0 flex-1 truncate text-sm text-stone-500">
-                {paramsSummary}
+          <div className="flex w-full items-center gap-2 rounded-2xl border border-stone-200 bg-white px-5 py-3 shadow-sm transition hover:border-charka-300">
+            <button
+              type="button"
+              onClick={() => setParamsOpen((o) => !o)}
+              aria-expanded={paramsOpen}
+              className="flex min-w-0 flex-1 items-center gap-3 text-left"
+            >
+              <span className="shrink-0 text-sm font-semibold text-stone-800">
+                Параметри напою
               </span>
-            )}
-            <span className="ml-auto shrink-0 text-xs font-medium text-charka-600">
-              {paramsOpen ? "згорнути ▲" : "змінити ▼"}
-            </span>
-          </button>
+              {!paramsOpen && paramsSummary && (
+                <span className="min-w-0 flex-1 truncate text-sm text-stone-500">
+                  {paramsSummary}
+                </span>
+              )}
+              <span className="ml-auto shrink-0 text-xs font-medium text-charka-600">
+                {paramsOpen ? "згорнути ▲" : "змінити ▼"}
+              </span>
+            </button>
+            <InfoTip
+              align="right"
+              text="Форма з кроками 1–6 згорнулась, щоб не заступати згенеровані рецепти. Натисніть «Параметри напою», щоб розгорнути й змінити будь-який параметр — після зміни доведеться натиснути «Згенерувати рецепти» ще раз."
+            />
+          </div>
         )}
 
         {(!result || paramsOpen) && (
@@ -347,14 +354,20 @@ export default function App() {
                 Не знаєте, що обрати? Хай система сама добере 3 рецепти під вашу
                 сировину — з максимальними збігом, балансом і гармонією.
               </p>
-              <button
-                type="button"
-                onClick={handleSurprise}
-                disabled={!mainMaterial?.material_id || surprising || loading}
-                className="shrink-0 rounded-xl bg-wine-600 px-5 py-2.5 text-sm font-semibold text-white shadow hover:bg-wine-700 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {surprising ? "Добираємо…" : "✨ Здивуй мене"}
-              </button>
+              <span className="flex shrink-0 items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleSurprise}
+                  disabled={!mainMaterial?.material_id || surprising || loading}
+                  className="rounded-xl bg-wine-600 px-5 py-2.5 text-sm font-semibold text-white shadow hover:bg-wine-700 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {surprising ? "Добираємо…" : "✨ Здивуй мене"}
+                </button>
+                <InfoTip
+                  align="right"
+                  text="Система сама добирає 3 профілі під основну сировину (по 3 характеристики на кожен) і будує для них найкращі композиції — не задаючи бажаний профіль вручну на кроці 6. Кожне натискання дає новий набір без утрати якості."
+                />
+              </span>
             </div>
             {!mainMaterial?.material_id && (
               <p className="mt-1 text-xs text-stone-400">
@@ -372,14 +385,20 @@ export default function App() {
           </>
         )}
 
-        <button
-          type="button"
-          onClick={handleGenerate}
-          disabled={!canSubmit}
-          className="rounded-xl bg-charka-600 px-6 py-3 text-base font-semibold text-white shadow hover:bg-charka-700 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {loading ? "Генерація…" : "Згенерувати рецепти"}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleGenerate}
+            disabled={!canSubmit}
+            className="rounded-xl bg-charka-600 px-6 py-3 text-base font-semibold text-white shadow hover:bg-charka-700 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {loading ? "Генерація…" : "Згенерувати рецепти"}
+          </button>
+          <InfoTip
+            align="left"
+            text="Збирає ароматичні сполуки обраної сировини, порівнює з бажаним профілем і повертає до 4 різних композицій (одна навмисно лаконічна) з оцінками збігу, балансу й гармонії. Форма параметрів після цього згорнеться — розгорніть її, щоб змінити щось і перегенерувати."
+          />
+        </div>
 
         {mainMaterial?.material_id && desired.length === 0 && !surprising && (
           <p className="-mt-2 text-sm text-stone-400">

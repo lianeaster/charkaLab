@@ -1,15 +1,20 @@
 import { useEffect, useState } from "react";
 import { PYRAMID_META, ROLE_LABELS, variantLabel } from "../api";
 import { downloadRecipePdf } from "../recipePdf";
+import InfoTip from "./InfoTip";
 import VariantEditor from "./VariantEditor";
+
+const PROFILE_BARS_HINT =
+  "Сума внесків усіх інгредієнтів у кожну ноту. Аромат — летючі сполуки (чути в носі), смак — структурні осі: солодкий/кислий/гіркий/терпкий/пекучий (відчуваються на язиці, не вивітрюються). Виділені кольором — ноти бажаного профілю.";
 
 function ProfileBars({ title, items }) {
   if (!items.length) return null;
   const max = Math.max(...items.map((i) => i.score), 1);
   return (
     <div>
-      <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-stone-400">
+      <h4 className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-stone-400">
         {title}
+        <InfoTip text={PROFILE_BARS_HINT} align="left" />
       </h4>
       <div className="flex flex-col gap-1">
         {items.map((it) => (
@@ -93,8 +98,12 @@ function ProfileRadar({ variant, desired, scaleMax }) {
 
   return (
     <div>
-      <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-stone-400">
+      <h4 className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-stone-400">
         Профіль: бажаний vs досягнутий
+        <InfoTip
+          align="left"
+          text="Пунктир — рівень 0.8 (цільова виразність), якого двигун прагне для кожної бажаної ноти. Заливка — сумарний аромат+смак, який реально дає склад. Осі: спершу бажані ноти, далі — найсильніші присутні (не більше 11 осей), щоб не було каші."
+        />
       </h4>
       <svg viewBox={`0 0 ${size} ${size}`} className="mx-auto w-full max-w-[300px]">
         {/* кільця-сітка */}
@@ -161,19 +170,25 @@ function ProfileRadar({ variant, desired, scaleMax }) {
   );
 }
 
+const MATCH_HINT =
+  "Наскільки склад відповідає бажаному профілю. Три складові: покриття (45%) — скільки бажаних нот присутні; сила (20%) — наскільки вони виражені; точність (35%) — яка частка всього аромату й смаку припадає саме на бажані ноти, а не на сторонні (штрафує «шумні» композиції, навіть якщо бажане формально є).";
+
 function ScoreBadge({ score }) {
   const pct = Math.round(score * 100);
   const color =
     pct >= 80 ? "bg-charka-600" : pct >= 50 ? "bg-charka-400" : "bg-stone-400";
   return (
     <span
-      title="Відповідність бажаному профілю: покриття + сила + точність нот"
-      className={`rounded-full px-3 py-1 text-sm font-semibold text-white ${color}`}
+      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-semibold text-white ${color}`}
     >
       {pct}% збіг
+      <InfoTip text={MATCH_HINT} side="bottom" align="right" />
     </span>
   );
 }
+
+const BALANCE_HINT =
+  "Рівновага смаку: чи не домінує щось гостре (гіркота/терпкість/пекучість), не зрівноважене солодким, і чи нема провалу в інший бік (нудотно-солодко без кислинки, або зовсім прісно). Це про смакові осі — не плутати зі «збігом» профілю вище.";
 
 function BalanceBadge({ score }) {
   const pct = Math.round(score * 100);
@@ -182,13 +197,16 @@ function BalanceBadge({ score }) {
   const textColor = pct >= 85 ? "text-white" : "";
   return (
     <span
-      title="Рівновага смаку (солодке/кисле/гірке/терпке) — не плутати зі «збігом» профілю"
-      className={`rounded-full px-3 py-1 text-sm font-semibold ${color} ${textColor}`}
+      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-semibold ${color} ${textColor}`}
     >
       {pct}% баланс смаку
+      <InfoTip text={BALANCE_HINT} side="bottom" align="right" />
     </span>
   );
 }
+
+const HARMONY_HINT =
+  "Гастрономічна гармонія: чи поєднання ароматичних родин (цитрусова, деревинна, солодка, часниково-сірчана тощо) не конфліктує між собою — незалежно від того, чи збалансований смак за осями. Ловить дисонанси на кшталт «часник у ягідному напої», яких баланс смаку вище не бачить.";
 
 function HarmonyBadge({ score }) {
   const pct = Math.round((score ?? 1) * 100);
@@ -200,10 +218,10 @@ function HarmonyBadge({ score }) {
       : "bg-red-500 text-white";
   return (
     <span
-      title="Гастрономічна гармонія: чи поєднання ароматичних родин їстівне (а не лише збалансоване за смаковими осями)"
-      className={`rounded-full px-3 py-1 text-sm font-semibold ${color}`}
+      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-semibold ${color}`}
     >
       {pct}% гармонія смаку
+      <InfoTip text={HARMONY_HINT} side="bottom" align="right" />
     </span>
   );
 }
@@ -222,8 +240,12 @@ function Pyramid({ pyramid }) {
   );
   return (
     <div className="mb-4 rounded-xl border border-stone-200 bg-cream/40 p-3">
-      <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-stone-400">
+      <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-stone-400">
         Піраміда нот (у часі)
+        <InfoTip
+          align="left"
+          text="Як напій розкривається в часі. Верхні ноти — короткий яскравий старт (леткі сполуки, швидко вивітрюються). Серце — ядро характеру, завжди основна сировина. База — стійкий післясмак; структурні смаки (солодкий/кислий/гіркий/терпкий/пекучий) завжди тут, бо не летять."
+        />
       </h4>
       <div className="flex flex-col gap-2">
         {sorted.map((layer) => {
@@ -332,19 +354,26 @@ function VariantCard({
           <ScoreBadge score={variant.match_score} />
           <BalanceBadge score={variant.balance_score} />
           <HarmonyBadge score={variant.harmony_score} />
-          <button
-            type="button"
-            onClick={handlePdf}
-            disabled={pdfState === "loading"}
-            className="mt-1 inline-flex items-center gap-1.5 rounded-full border border-stone-300 px-3 py-1 text-xs font-medium text-stone-600 transition hover:border-charka-400 hover:text-charka-700 disabled:opacity-50"
-          >
-            <span aria-hidden>⬇</span>
-            {pdfState === "loading"
-              ? "Готуємо…"
-              : pdfState === "error"
-              ? "Помилка, ще раз"
-              : "Зберегти PDF"}
-          </button>
+          <div className="mt-1 flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={handlePdf}
+              disabled={pdfState === "loading"}
+              className="inline-flex items-center gap-1.5 rounded-full border border-stone-300 px-3 py-1 text-xs font-medium text-stone-600 transition hover:border-charka-400 hover:text-charka-700 disabled:opacity-50"
+            >
+              <span aria-hidden>⬇</span>
+              {pdfState === "loading"
+                ? "Готуємо…"
+                : pdfState === "error"
+                ? "Помилка, ще раз"
+                : "Зберегти PDF"}
+            </button>
+            <InfoTip
+              side="bottom"
+              align="right"
+              text="Завантажити цей варіант рецепта файлом PDF: повний склад, дози, пірамідa нот і пояснення — щоб мати під рукою без інтернету."
+            />
+          </div>
         </div>
       </div>
 
@@ -362,6 +391,16 @@ function VariantCard({
         />
       ) : (
         <>
+          <div className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-stone-400">
+            Склад композиції
+            <InfoTip
+              align="left"
+              text={
+                "Роль пояснює, звідки взявся інгредієнт: additional — додали ви; suggested/reinforce — дібрано, щоб покрити прогалину чи підсилити конкретну ноту профілю; harmony/complexity — додано для смакової повноти, не тягнучи профіль; sweetener — підсолоджувач, дозується автоматично.\n\n" +
+                "Відсоток — доза відносно основної сировини (=100%), за «чистотою» влучання інгредієнта в профіль, обрізана стелею ярусу летючості й, для потужної сировини (спецій, гіркот), її власним максимумом. У підсолоджувача — це вже порахована реальна солодкість."
+              }
+            />
+          </div>
           <div className="mb-2 flex flex-wrap gap-2">
             {variant.materials.map((m, i) => (
               <span
@@ -387,13 +426,19 @@ function VariantCard({
             ))}
           </div>
           {canEdit && (
-            <button
-              type="button"
-              onClick={() => setEditing(true)}
-              className="mb-4 inline-flex items-center gap-1.5 rounded-full border border-stone-300 px-3 py-1 text-xs font-medium text-stone-600 transition hover:border-charka-400 hover:text-charka-700"
-            >
-              <span aria-hidden>✎</span> Редагувати склад
-            </button>
+            <div className="mb-4 flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                className="inline-flex items-center gap-1.5 rounded-full border border-stone-300 px-3 py-1 text-xs font-medium text-stone-600 transition hover:border-charka-400 hover:text-charka-700"
+              >
+                <span aria-hidden>✎</span> Редагувати склад
+              </button>
+              <InfoTip
+                align="left"
+                text="Змінити основну й додаткову сировину або бажаний профіль цього рецепта та перерахувати заново. Ноти (аромат/смак) редагувати не можна — вони результат розрахунку, а не вхід."
+              />
+            </div>
           )}
         </>
       )}
@@ -414,6 +459,10 @@ function VariantCard({
         <div className="mb-4 rounded-lg border border-sky-300 bg-sky-50 p-3">
           <h4 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-sky-800">
             <span aria-hidden>🔎</span> Схожість з наявними рецептами
+            <InfoTip
+              align="left"
+              text="Звірка з локальним довідником ~155 відомих рецептур (без веб-пошуку). Відсоток поєднує дві речі: яка частка ВАШОГО складу пояснюється цим напоєм (чи не намішано зайвого) і наскільки повно відтворено ХАРАКТЕРНИЙ набір цього напою. Показується лише коли перевищує 60%; основа теж враховується — джиновий склад на вині джином уже не вважається."
+            />
           </h4>
           <div className="flex flex-col gap-3">
             {variant.similarities.map((sim, i) => (
@@ -450,6 +499,10 @@ function VariantCard({
           >
             <span aria-hidden>{variant.harmony_score < 0.6 ? "⛔" : "⚠️"}</span>
             Гастрономічна гармонія
+            <InfoTip
+              align="left"
+              text="Показується автоматично, коли гармонія нижче 85% — тобто ароматичні родини складу конфліктують (напр. часник у ягідному напої), навіть якщо смакові осі формально збалансовані. Нижче — за яку саме пару нот і наскільки."
+            />
           </h4>
           <p className="text-sm text-stone-700">
             {variant.harmony_score < 0.6
@@ -470,8 +523,12 @@ function VariantCard({
 
       {variant.balance_notes && variant.balance_notes.length > 0 && (
         <div className="mb-4 rounded-lg border border-charka-100 bg-charka-50/60 p-3">
-          <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-charka-700">
+          <h4 className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-charka-700">
             Балансування
+            <InfoTip
+              align="left"
+              text="Що двигун додав чи скоригував ОСТАННІМ кроком, коли весь ароматичний склад уже зібраний: підсолоджувач проти гострих нот, що перебивають профіль, або кислинку проти нудотної солодкості."
+            />
           </h4>
           <ul className="flex flex-col gap-0.5 text-sm text-stone-600">
             {variant.balance_notes.map((n, i) => (
@@ -490,8 +547,12 @@ function VariantCard({
       </div>
 
       <details className="text-sm">
-        <summary className="cursor-pointer text-stone-500 hover:text-stone-700">
+        <summary className="flex cursor-pointer items-center gap-1.5 text-stone-500 hover:text-stone-700">
           Аромосполуки ({variant.compounds.length})
+          <InfoTip
+            align="left"
+            text="Хімічні сполуки складу й ноти, які вони дають. kind: aroma — летюча, чути в носі; taste — структурна, відчувається на язиці й не вивітрюється; both — і те, й інше."
+          />
         </summary>
         <ul className="mt-2 flex flex-col gap-1">
           {variant.compounds.map((c) => (
@@ -519,6 +580,10 @@ function BaseInfluenceBanner({ influence }) {
       <div className="mb-1 flex items-center gap-2 font-semibold text-charka-700">
         <span aria-hidden>🍶</span>
         Вплив основи: {influence.name}
+        <InfoTip
+          align="left"
+          text="Основа (спирт/вино/безалкогольна) має власний смаковий внесок, рекомендований ABV і може конфліктувати чи синергувати з бажаним профілем — напр. вино конфліктує з ніжними квітковими нотами через таніни, а нейтральний спирт лише підкреслює аромат сировини."
+        />
       </div>
       <p className="text-sm text-stone-600">{influence.note}</p>
       {influence.abv_hint && (
@@ -554,6 +619,10 @@ function FeasibilityBanner({ feasibility }) {
       <div className="flex items-center gap-2 font-semibold">
         <span aria-hidden>{impossible ? "⛔" : "⚠️"}</span>
         {title}
+        <InfoTip
+          align="left"
+          text="«Неможливо» — жодна доступна сировина не дає потрібної ноти навіть з додатками. «Не домінуватиме» — ноти присутні, але обрана сировина дає сильніші сторонні ноти, які їх перебивають."
+        />
       </div>
       <p className="mt-1 text-sm">{feasibility.message}</p>
       {feasibility.dominating?.length > 0 && (
@@ -570,7 +639,13 @@ function SeasonBanner({ season }) {
   const oos = season.out_of_season || [];
   return (
     <div className="rounded-2xl border border-stone-200 bg-stone-50 p-4 text-sm text-stone-700">
-      <div className="font-semibold text-stone-800">Сезон: {season.name}</div>
+      <div className="flex items-center gap-1.5 font-semibold text-stone-800">
+        Сезон: {season.name}
+        <InfoTip
+          align="left"
+          text="Свіжа форма позасезонної сировини не пропонується автоматично при доборі. Якщо ви обрали її самі — тут попередження та підказка, якою консервованою формою (сушена/екстракт/сік) замінити."
+        />
+      </div>
       {oos.length > 0 ? (
         <div className="mt-1">
           <p className="text-amber-800">
@@ -608,8 +683,12 @@ function AudienceBanner({ audience }) {
   }
   return (
     <div className="rounded-2xl border border-stone-200 bg-stone-50 p-4 text-sm text-stone-700">
-      <div className="font-semibold text-stone-800">
+      <div className="flex flex-wrap items-center gap-1.5 font-semibold text-stone-800">
         Аудиторія: {audience.name}
+        <InfoTip
+          align="left"
+          text="Для цієї аудиторії жорстко виключена сировина з протипоказаннями (напр. вагітним — токсична, дітям і за кермом — алкогольна основа, спортсменам — кофеїн). Виключення діє і на авто-добір двигуна, і на ваш ручний вибір сировини."
+        />
         {audience.alcohol_free && (
           <span className="ml-2 rounded-full bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700">
             0% алкоголю

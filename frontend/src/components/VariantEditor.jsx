@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import InfoTip from "./InfoTip";
 import MaterialAutocomplete from "./MaterialAutocomplete";
 import ProfileSelector from "./ProfileSelector";
 
@@ -142,8 +143,12 @@ export default function VariantEditor({
   return (
     <div className="mb-4 rounded-xl border border-charka-200 bg-charka-50/40 p-4">
       <div className="mb-2 flex items-center justify-between">
-        <h4 className="text-xs font-semibold uppercase tracking-wide text-charka-700">
+        <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-charka-700">
           Редагування складу
+          <InfoTip
+            align="left"
+            text="Основна сировина фіксує серце композиції (100% дози), решту інгредієнтів дозує двигун автоматично за влучністю в профіль. Підсолоджувач (цукор/мед) сюди не входить — двигун додає й дозує його сам під новий склад."
+          />
         </h4>
         <span className="text-[11px] text-stone-400">
           підсолоджувач додає й дозує двигун
@@ -210,8 +215,12 @@ export default function VariantEditor({
       {characteristics?.length > 0 && (
         <div className="mt-4 border-t border-charka-200 pt-3">
           <div className="mb-2 flex items-baseline justify-between gap-2">
-            <h4 className="text-xs font-semibold uppercase tracking-wide text-charka-700">
+            <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-charka-700">
               Бажаний профіль цього рецепта
+              <InfoTip
+                align="left"
+                text="Профіль — це ціль, за якою рахуються збіг, дозування та баланс, а не сировина, яку добирає двигун. Якщо додати ноту, якої обраний склад не дає, вона чесно з'явиться серед «не вистачає» — додайте відповідний інгредієнт вище."
+              />
             </h4>
             <span className="text-[11px] text-stone-400">
               {profile.length} обрано
@@ -222,12 +231,6 @@ export default function VariantEditor({
             selected={profile}
             onChange={setProfile}
           />
-          <p className="mt-2 text-[11px] leading-relaxed text-stone-400">
-            Профіль — це ціль, за якою рахуються збіг, дозування та баланс.
-            Нову сировину під нього тут не добирають: якщо додати ноту, якої
-            склад не дає, вона чесно з'явиться серед «не вистачає» — додайте
-            відповідний інгредієнт вище.
-          </p>
         </div>
       )}
 
@@ -246,6 +249,10 @@ export default function VariantEditor({
         >
           {busy ? "Перерахунок…" : "Оновити"}
         </button>
+        <InfoTip
+          align="left"
+          text="Перерахувати рецепт із новим складом і профілем. Двигун заново підбере підсолоджувач і скоригує баланс смаку під зміни; нову ароматичну сировину сам не додає — лише те, що ви вписали вище."
+        />
         <button
           type="button"
           onClick={onCancel}

@@ -1362,6 +1362,43 @@ MATERIALS = [m for m in MATERIALS if m["name"] not in _MANAGED_SPICE_NAMES]
 MATERIALS = MATERIALS + _SPICE_MATERIALS
 
 
+# Сировина, що насправді є ЧАСТИНОЮ іншої. Тримати її окремим записом
+# незручно: у формі виходили дві позиції («чорна смородина» і «лист чорної
+# смородини») там, де мав бути один інгредієнт із вибором частини — ягоди чи
+# лист. Стара назва лишається синонімом, тож пошук за нею працює як раніше.
+MERGE_INTO = {
+    "лист чорної смородини": ("чорна смородина", "leaf"),
+    "малиновий лист": ("малина", "leaf"),
+    "квіти бузини": ("бузина чорна", "flower"),
+    "огіркова шкірка": ("огірок", "peel"),
+}
+
+_by_name = {m["name"]: m for m in MATERIALS}
+for _src_name, (_dst_name, _part) in MERGE_INTO.items():
+    _src, _dst = _by_name.get(_src_name), _by_name.get(_dst_name)
+    if _src is None or _dst is None:
+        continue
+    # Ключ (сполука, частина, форма, кісточка) унікальний у БД, а частина
+    # злитого запису може вже бути в цілі (у бузини квіти були й до злиття) —
+    # тому додаємо лише те, чого ще немає.
+    _dst_links = _dst.setdefault("compounds", [])
+    _seen = {
+        (l["compound"], l.get("part", "whole"), l.get("form", "fresh"), l.get("pit", "na"))
+        for l in _dst_links
+    }
+    for _link in _src.get("compounds", []):
+        _key = (_link["compound"], _part, _link.get("form", "fresh"), _link.get("pit", "na"))
+        if _key in _seen:
+            continue
+        _seen.add(_key)
+        _dst_links.append({**_link, "part": _part})
+    _aliases = _dst.setdefault("aliases", [])
+    for _a in [_src_name, *_src.get("aliases", [])]:
+        if _a not in _aliases:
+            _aliases.append(_a)
+MATERIALS = [m for m in MATERIALS if m["name"] not in MERGE_INTO]
+
+
 SEED_DATA: Dict = {
     "characteristics": CHARACTERISTICS,
     "bases": [

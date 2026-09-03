@@ -1609,7 +1609,11 @@ def _make_variant(
             form=s.form,
             pit=s.pit,
             role=s.role,
-            amount=round(s.amount, 2),
+            # Для підсолоджувача показуємо ПОРАХОВАНУ солодкість (sweet_add), а
+            # не s.amount: там лежить фіксована доза його ароматичних нот
+            # (SWEETENER_AROMA), однакова для всіх рецептів. Через це в картці
+            # завжди стояло «цукор 60%», хоч насправді треба було 2% чи 16%.
+            amount=round(s.sweet_add if s.role == "sweetener" else s.amount, 3),
         )
         for s in selections
         if s.role != "base_spirit"  # основа показується окремо у банері

@@ -348,6 +348,47 @@ def _compound_chars(compound: AromaCompound) -> Dict[str, float]:
     }
 
 
+# Сполуки опції сировини: (назва, kind, ярус, інтенсивність, {нота: вага}).
+# Дані незмінні після сидування, а профіль композиції перебудовується десятки
+# разів за генерацію — без кешу це тисячі ледачих запитів до БД.
+_COMPOUNDS_CACHE: Dict[
+    Tuple[int, str, str, str], List[Tuple[str, str, str, float, Dict[str, float]]]
+] = {}
+
+
+def _option_compounds(
+    db: Session, material_id: int, part: str, form: str, pit: str
+) -> List[Tuple[str, str, str, float, Dict[str, float]]]:
+    cache_key = (material_id, part, form, pit)
+    cached = _COMPOUNDS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    rows = db.scalars(
+        select(MaterialCompound).where(
+            MaterialCompound.raw_material_id == material_id,
+            MaterialCompound.part == part,
+            MaterialCompound.form == form,
+            MaterialCompound.pit == pit,
+        )
+    ).all()
+    out: List[Tuple[str, str, str, float, Dict[str, float]]] = []
+    for mc in rows:
+        compound = db.get(AromaCompound, mc.compound_id)
+        if compound is None:
+            continue
+        out.append(
+            (
+                compound.name,
+                compound.kind,
+                compound.volatility or VOL_HEART,
+                mc.intensity,
+                _compound_chars(compound),
+            )
+        )
+    _COMPOUNDS_CACHE[cache_key] = out
+    return out
+
+
 def _add_selection_to_profile(
     db: Session, selection: ResolvedSelection, profile: Profile
 ) -> None:
@@ -381,29 +422,19 @@ def _add_selection_to_profile(
     # Серце напою — завжди основна сировина: її ноти кладемо в шар heart
     # незалежно від хімії. Решта — за летючістю самих сполук.
     force_heart = selection.role == "main"
-    rows = db.scalars(
-        select(MaterialCompound).where(
-            MaterialCompound.raw_material_id == selection.material_id,
-            MaterialCompound.part == selection.part,
-            MaterialCompound.form == selection.form,
-            MaterialCompound.pit == selection.pit,
-        )
-    ).all()
-    for mc in rows:
-        compound = db.get(AromaCompound, mc.compound_id)
-        if compound is None:
-            continue
-        layer = VOL_HEART if force_heart else (compound.volatility or VOL_HEART)
-        char_weights = _compound_chars(compound)
+    for name, kind, volatility, intensity, char_weights in _option_compounds(
+        db, selection.material_id, selection.part, selection.form, selection.pit
+    ):
+        layer = VOL_HEART if force_heart else volatility
         recorded: Set[str] = set()
         for char_name, weight in char_weights.items():
-            contribution = mc.intensity * weight * amount
+            contribution = intensity * weight * amount
             # Структурні смаки не летять — хай з якою сполукою прийшли, вони
             # формують фініш (базу). Ароматичні ноти розкладаються за летючістю
             # сполуки (для основної сировини — примусово у «серце»).
             target_layer = VOL_BASE if char_name in _FINISH_AXES else layer
-            in_aroma = compound.kind in (KIND_AROMA, KIND_BOTH)
-            in_taste = compound.kind in (KIND_TASTE, KIND_BOTH) and not is_sweetener
+            in_aroma = kind in (KIND_AROMA, KIND_BOTH)
+            in_taste = kind in (KIND_TASTE, KIND_BOTH) and not is_sweetener
             if in_aroma:
                 profile.aroma[char_name] += contribution
                 recorded.add(char_name)
@@ -416,10 +447,10 @@ def _add_selection_to_profile(
                 profile.layers[target_layer][char_name] += contribution
         if not recorded:
             continue
-        if compound.name not in profile.compounds:
-            profile.compounds[compound.name] = (compound.kind, recorded)
+        if name not in profile.compounds:
+            profile.compounds[name] = (kind, recorded)
         else:
-            profile.compounds[compound.name][1].update(recorded)
+            profile.compounds[name][1].update(recorded)
 
 
 def _apply_base_fixative(
@@ -786,8 +817,18 @@ def _overpowers(chans: Dict[str, float], desired_set: Set[str]) -> bool:
     return max_off > on_desired
 
 
+# Ярус летючості опції не змінюється (дані сидяться раз при старті), а
+# запитують його на кожного кандидата в доборі — без кешу це десятки тисяч
+# ледачих запитів до БД на одну генерацію.
+_LAYER_CACHE: Dict[Tuple[int, str, str, str], str] = {}
+
+
 def _option_layer(db: Session, material_id: int, part: str, form: str, pit: str) -> str:
     """Домінантний ярус летючості опції (top|heart|base) за сумарним внеском."""
+    cache_key = (material_id, part, form, pit)
+    cached = _LAYER_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     rows = db.scalars(
         select(MaterialCompound).where(
             MaterialCompound.raw_material_id == material_id,
@@ -803,9 +844,9 @@ def _option_layer(db: Session, material_id: int, part: str, form: str, pit: str)
             continue
         weight_sum = sum(_compound_chars(compound).values())
         totals[compound.volatility or VOL_HEART] += mc.intensity * weight_sum
-    if not totals:
-        return VOL_HEART
-    return max(totals.items(), key=lambda kv: kv[1])[0]
+    layer = max(totals.items(), key=lambda kv: kv[1])[0] if totals else VOL_HEART
+    _LAYER_CACHE[cache_key] = layer
+    return layer
 
 
 def _dose(
@@ -1072,6 +1113,73 @@ def _find_harmony(
     return best[0], best[1], best[2], best[3], best[4]
 
 
+# Мінімальна гастрономічна гармонія, яку мусить зберегти інгредієнт, доданий
+# заради багатогранності. Він не підсилює бажані ноти (таких кандидатів уже
+# нема), тому єдине, чим він виправдовується, — нові грані без дисонансу.
+COMPLEXITY_HARMONY_MIN = 0.9
+
+
+def _find_complexity(
+    db: Session,
+    selections: List[ResolvedSelection],
+    desired_set: Set[str],
+    exclude: Set[int],
+    season_blocked_ids: Set[int] = frozenset(),
+) -> Optional[Tuple[int, str, str, str, int]]:
+    """Інгредієнт заради БАГАТОГРАННОСТІ, коли підсилювати профіль уже нічим.
+
+    `_find_harmony` вимагає, щоб кандидат сам підсилював бажані ноти. На
+    вузьких профілях (напр. «смолистий + солодкий») такі швидко вичерпуються,
+    і композиція лишається з двох інгредієнтів. Тут вимога інша: не псувати
+    профіль, не гірчити й додати РЕАЛЬНО нові відчутні ноти, зберігши
+    гастрономічну гармонію суміші.
+
+    Повертає (material_id, part, form, pit, скільки нових нот) або None.
+    """
+    profile = _build_profile(db, selections)
+    current: Dict[str, float] = defaultdict(float)
+    for name, value in profile.aroma.items():
+        current[name] += value
+    for name, value in profile.taste.items():
+        current[name] += value
+    current_harmony = harmony.score_harmony(dict(current)).score
+    floor = min(current_harmony, COMPLEXITY_HARMONY_MIN)
+
+    best: Optional[Tuple[int, str, str, str, int]] = None
+    best_key: Optional[Tuple[int, float]] = None
+    material_ids = db.scalars(
+        select(RawMaterial.id).where(RawMaterial.id.notin_(exclude))
+    ).all()
+    for mid in material_ids:
+        for (part, form, pit), chans in _option_breakdown(db, mid).items():
+            if form == FORM_FRESH and mid in season_blocked_ids:
+                continue
+            harsh = sum(chans.get(f"taste::{a}", 0.0) for a in HARSH_AXES)
+            if harsh > 0.4:
+                continue  # не додаємо гіркоти/терпкості заради кількості
+            if _overpowers(chans, desired_set):
+                continue  # його стороння нота перебила б профіль
+            dose = _dose(db, mid, part, form, pit, desired_set)
+            merged = dict(current)
+            new_notes = 0
+            for key, value in chans.items():
+                name = key.split("::", 1)[1]
+                before = merged.get(name, 0.0)
+                merged[name] = before + value * dose
+                if before < COVERED_MIN <= merged[name]:
+                    new_notes += 1
+            if new_notes == 0:
+                continue  # нічого не додає — лише розбавляє
+            score = harmony.score_harmony(merged).score
+            if score < floor:
+                continue  # зіпсував би поєднання
+            key = (new_notes, round(score, 3))
+            if best_key is None or key > best_key:
+                best_key = key
+                best = (mid, part, form, pit, new_notes)
+    return best
+
+
 def _finalize(
     db: Session,
     selections: List[ResolvedSelection],
@@ -1174,11 +1282,24 @@ def _finalize(
                 if not need_min:
                     continue  # мінімум набрано — не додаємо «порожній» інгредієнт
         # 1б) для добору мінімуму — будь-який чистий гармонійний інгредієнт
+        added_for_complexity = False
         if mid is None:
             harm = _find_harmony(db, effective_desired, block, season_blocked_ids)
-            if harm is None:
+            if harm is not None:
+                mid, part, form, pit, _reinf = harm
+        # 1в) підсилювати профіль уже нічим і гармонізатора нема — але склад
+        #     ще бідний. Беремо інгредієнт заради багатогранності: він не
+        #     тягне профіль, зате додає нові грані, не псуючи поєднання.
+        if mid is None:
+            if not need_min:
                 break
-            mid, part, form, pit, _reinf = harm
+            extra = _find_complexity(
+                db, selections, effective_desired, block, season_blocked_ids
+            )
+            if extra is None:
+                break
+            mid, part, form, pit, _new_notes = extra
+            added_for_complexity = True
 
         selections.append(
             ResolvedSelection(
@@ -1190,6 +1311,10 @@ def _finalize(
         if reinforced_char is not None:
             notes.append(
                 f"{_resolve_name(db, mid)}: підсилює «{reinforced_char}» у профілі"
+            )
+        elif added_for_complexity:
+            notes.append(
+                f"{_resolve_name(db, mid)}: додає нові грані смаку, не зачіпаючи профілю"
             )
         else:
             notes.append(

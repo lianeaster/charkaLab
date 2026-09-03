@@ -272,6 +272,8 @@ const ROLE_CHIP = {
   balance: "border-charka-200 bg-charka-50 text-charka-700",
   sweetener: "border-charka-200 bg-charka-50 text-charka-700",
   harmony: "border-stone-300 bg-white text-stone-600",
+  reinforce: "border-wine-300 bg-wine-50 text-wine-800",
+  complexity: "border-stone-300 bg-white text-stone-600",
   base: "border-stone-400 bg-stone-100 text-stone-700",
 };
 

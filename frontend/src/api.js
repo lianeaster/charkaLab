@@ -124,6 +124,8 @@ export const ROLE_LABELS = {
   suggested: "підібрана",
   balance: "для балансу",
   harmony: "для гармонії",
+  reinforce: "підсилює ноту",
+  complexity: "для багатогранності",
   sweetener: "для солодкості",
   base: "для післясмаку",
 };

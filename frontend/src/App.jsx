@@ -46,6 +46,9 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [surprising, setSurprising] = useState(false);
   const [error, setError] = useState(null);
+  // Після генерації форма параметрів згортається, щоб результати були одразу
+  // перед очима; розгорнути її можна назад заголовком-перемикачем.
+  const [paramsOpen, setParamsOpen] = useState(true);
 
   useEffect(() => {
     api.characteristics().then(setCharacteristics).catch(() => {});
@@ -67,6 +70,24 @@ export default function App() {
     return map;
   }, [characteristics]);
   const audience = audienceById[audienceId];
+
+  // Короткий опис обраних параметрів — показуємо у згорнутому заголовку,
+  // щоб було видно, з чим згенеровано рецепти, не розгортаючи форму.
+  const paramsSummary = useMemo(() => {
+    const nameById = {};
+    for (const c of characteristics) nameById[c.id] = c.name;
+    const notes = desired.map((id) => nameById[id]).filter(Boolean);
+    return [
+      mainMaterial?.name,
+      bases.find((b) => b.id === baseId)?.name,
+      audience?.name,
+      notes.length > 3
+        ? `${notes.slice(0, 3).join(", ")} +${notes.length - 3}`
+        : notes.join(", "),
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }, [characteristics, desired, mainMaterial, bases, baseId, audience]);
   const alcoholFree = Boolean(audience?.alcohol_free);
   const forbiddenTags = useMemo(
     () => audience?.forbidden_tags || [],
@@ -161,6 +182,7 @@ export default function App() {
       const res = await api.generate(payload);
       setResult(res);
       setReqSnapshot(payload);
+      setParamsOpen(false);
     } catch (e) {
       setError(e.message || "Помилка генерації");
     } finally {
@@ -205,6 +227,7 @@ export default function App() {
         audience_id: audienceId,
         season,
       });
+      setParamsOpen(false);
     } catch (e) {
       setError(e.message || "Помилка добору");
     } finally {
@@ -226,6 +249,29 @@ export default function App() {
       </header>
 
       <div className="flex flex-col gap-4">
+        {result && (
+          <button
+            type="button"
+            onClick={() => setParamsOpen((o) => !o)}
+            aria-expanded={paramsOpen}
+            className="flex w-full items-center gap-3 rounded-2xl border border-stone-200 bg-white px-5 py-3 text-left shadow-sm transition hover:border-charka-300"
+          >
+            <span className="shrink-0 text-sm font-semibold text-stone-800">
+              Параметри напою
+            </span>
+            {!paramsOpen && paramsSummary && (
+              <span className="min-w-0 flex-1 truncate text-sm text-stone-500">
+                {paramsSummary}
+              </span>
+            )}
+            <span className="ml-auto shrink-0 text-xs font-medium text-charka-600">
+              {paramsOpen ? "згорнути ▲" : "змінити ▼"}
+            </span>
+          </button>
+        )}
+
+        {(!result || paramsOpen) && (
+          <>
         <Section
           step={1}
           title="Цільова аудиторія"
@@ -323,6 +369,8 @@ export default function App() {
             onChange={setDesired}
           />
         </Section>
+          </>
+        )}
 
         <button
           type="button"

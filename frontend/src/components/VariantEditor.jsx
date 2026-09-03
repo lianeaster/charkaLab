@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
-import { api, variantLabel } from "../api";
+import { api } from "../api";
 import MaterialAutocomplete from "./MaterialAutocomplete";
 
-// Ролі, які користувач не редагує вручну: основна сировина фіксована,
-// а підсолоджувач (цукор/мед) додає й дозує сам двигун при балансуванні.
+// Основну сировину редагуємо окремим полем (вона йде в запит як main_material,
+// а не в загальний список), тож зі списку рядків її виключаємо. Підсолоджувач
+// (цукор/мед) не редагується взагалі — його додає й дозує сам двигун під час
+// балансування смаку, вже під новий склад.
 const LOCKED_ROLES = new Set(["main", "sweetener"]);
 
 function emptyRow() {
@@ -28,38 +30,44 @@ export default function VariantEditor({
   const mainMat = variant.materials.find((m) => m.role === "main");
   const sweeteners = variant.materials.filter((m) => m.role === "sweetener");
 
+  const [main, setMain] = useState(null);
   const [rows, setRows] = useState([]);
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
 
-  // Ініціалізуємо редаговані рядки зі складу варіанта; підвантажуємо форми
+  // Ініціалізуємо редаговані поля зі складу варіанта; підвантажуємо форми
   // кожної сировини, щоб працював випадаючий список форм.
   useEffect(() => {
     let cancelled = false;
+
+    async function load(m, role) {
+      let options = [];
+      try {
+        options = (await api.materialForms(m.material_id)).options || [];
+      } catch (_) {
+        options = [];
+      }
+      return {
+        material_id: m.material_id,
+        name: m.name,
+        part: m.part || "whole",
+        form: m.form,
+        pit: m.pit,
+        role,
+        options,
+      };
+    }
+
     const editable = variant.materials.filter(
       (m) => !LOCKED_ROLES.has(m.role) && m.material_id > 0
     );
-    Promise.all(
-      editable.map(async (m) => {
-        let options = [];
-        try {
-          options = (await api.materialForms(m.material_id)).options || [];
-        } catch (_) {
-          options = [];
-        }
-        return {
-          material_id: m.material_id,
-          name: m.name,
-          part: m.part || "whole",
-          form: m.form,
-          pit: m.pit,
-          role: m.role || "additional",
-          options,
-        };
-      })
-    ).then((list) => {
+    Promise.all([
+      mainMat?.material_id > 0 ? load(mainMat, "main") : Promise.resolve(null),
+      ...editable.map((m) => load(m, m.role || "additional")),
+    ]).then(([mainRow, ...list]) => {
       if (!cancelled) {
+        setMain(mainRow);
         setRows(list);
         setReady(true);
       }
@@ -89,13 +97,17 @@ export default function VariantEditor({
     setBusy(true);
     setErr(null);
     try {
+      // Основну сировину беремо з редактора (користувач міг її замінити);
+      // якщо з якоїсь причини її не завантажено — лишається та, з якою
+      // генерувався рецепт.
+      const mainSel = main?.material_id ? main : request.main_material;
       const payload = {
         title: variant.title,
         main_material: {
-          material_id: request.main_material.material_id,
-          part: request.main_material.part,
-          form: request.main_material.form,
-          pit: request.main_material.pit,
+          material_id: mainSel.material_id,
+          part: mainSel.part || "whole",
+          form: mainSel.form,
+          pit: mainSel.pit,
         },
         materials: rows
           .filter((r) => r && r.material_id)
@@ -127,16 +139,7 @@ export default function VariantEditor({
           Редагування складу
         </h4>
         <span className="text-[11px] text-stone-400">
-          основну сировину й підсолоджувач змінює лише двигун
-        </span>
-      </div>
-
-      {/* Основна сировина — фіксована */}
-      <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-stone-200 bg-white px-3 py-2 text-sm">
-        <span className="font-medium text-stone-800">{mainMat?.name}</span>
-        <span className="text-xs text-stone-500">· {variantLabel(mainMat)}</span>
-        <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[11px] text-stone-500">
-          основна · фіксована
+          підсолоджувач додає й дозує двигун
         </span>
       </div>
 
@@ -144,6 +147,21 @@ export default function VariantEditor({
         <p className="text-sm text-stone-400">Завантаження складу…</p>
       ) : (
         <div className="flex flex-col gap-2">
+          {/* Основна сировина — теж редагована */}
+          <div className="flex items-start gap-2">
+            <div className="flex-1">
+              <MaterialAutocomplete
+                value={main}
+                onChange={(v) => setMain(v ? { ...v, role: "main" } : null)}
+                placeholder="Основна сировина"
+                forbiddenTags={forbiddenTags}
+              />
+            </div>
+            <span className="mt-2 shrink-0 rounded-full bg-stone-100 px-2 py-1 text-[11px] text-stone-500">
+              основна
+            </span>
+          </div>
+
           {rows.map((row, i) => (
             <div key={i} className="flex items-start gap-2">
               <div className="flex-1">
@@ -188,11 +206,11 @@ export default function VariantEditor({
         </div>
       )}
 
-      <div className="mt-4 flex items-center gap-2">
+      <div className="mt-4 flex flex-wrap items-center gap-2">
         <button
           type="button"
           onClick={apply}
-          disabled={busy}
+          disabled={busy || !main?.material_id}
           className="rounded-lg bg-charka-600 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-charka-700 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {busy ? "Перерахунок…" : "Оновити"}
@@ -205,6 +223,11 @@ export default function VariantEditor({
         >
           Скасувати
         </button>
+        {ready && !main?.material_id && (
+          <span className="text-xs text-stone-400">
+            Оберіть основну сировину зі списку, щоб перерахувати
+          </span>
+        )}
       </div>
     </div>
   );

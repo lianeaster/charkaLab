@@ -63,6 +63,12 @@ from ..schemas import (
 MAX_VARIANTS = 4
 MAX_SUGGESTED = 3
 MIN_INGREDIENTS = 4
+# До скількох ароматичних складових прагне двигун, коли є з чого добирати.
+# Відокремлено від MIN_INGREDIENTS навмисно: мінімум — це нижня межа (і водночас
+# стеля «лаконічної» композиції, яку показуємо як окремий стиль), а це —
+# бажана багатогранність. Двигун дотягує до неї лише чистими інгредієнтами:
+# щойно кандидатів без стороннього шуму не лишається, він спиняється раніше.
+TARGET_INGREDIENTS = 6
 # Пошук РІЗНОМАНІТНИХ композицій: показуємо кілька рецептів із різними
 # інгредієнтами, а не майже однакові. Після кожного прийнятого варіанта його
 # додані інгредієнти «банимо», щоб наступний будувався з інших — або взагалі не
@@ -72,7 +78,7 @@ SCORE_DELTA = 0.1          # лишаємо варіанти в межах ць�
 MIN_VARIANT_DIFF = 2       # мін. різниця у наборі доданих інгредієнтів між варіантами
 # Стеля кількості ароматичних складових (без підсолоджувача): дозволяє додавати
 # більше інгредієнтів, щоб краще «вписатися» в профіль.
-MAX_INGREDIENTS = 7
+MAX_INGREDIENTS = 8
 # Цільова виразність кожної бажаної характеристики; поки нота слабша — додаємо
 # ще чистих підсилювачів.
 TARGET_STRENGTH = 0.8
@@ -535,6 +541,28 @@ def _honey_id(db: Session) -> Optional[int]:
     return db.scalar(select(RawMaterial.id).where(RawMaterial.name == HONEY_NAME))
 
 
+# Сировина, доречна на кухні, але не в настоянці. Формально вона «чиста» за
+# нотами (гарбуз = солодкий+ванільний+карамельний, морква = солодкий+трав'яний),
+# тож правила гастрономічної гармонії її не ловлять — вона не має власної
+# «овочевої» ноти, якою її можна було б відрізнити. Тому виключаємо адресно:
+# двигун не пропонує її сам, але користувач може додати вручну в редакторі
+# складу, якщо свідомо хоче саме такий напій.
+CULINARY_ONLY = {
+    "буряк столовий",
+    "морква",
+    "гарбуз",
+    "томат",
+}
+
+
+def _culinary_only_ids(db: Session) -> Set[int]:
+    """ID кулінарної сировини, яку не пропонуємо в авто-доборі."""
+    rows = db.scalars(
+        select(RawMaterial.id).where(RawMaterial.name.in_(CULINARY_ONLY))
+    ).all()
+    return set(rows)
+
+
 def _forbidden_material_ids(db: Session, forbidden_tags: Set[str]) -> Set[int]:
     """ID сировини, що має хоч один заборонений тег (жорсткий фільтр ЦА)."""
     if not forbidden_tags:
@@ -684,11 +712,12 @@ def suggest_profile(
 
     if main_material_id:
         # Досяжність перевіряємо з тими самими фільтрами, що діятимуть при
-        # генерації: заборонена для ЦА сировина та позасезонна свіжа форма
-        # не можуть бути «носіями» обіцяної ноти.
+        # генерації: заборонена для ЦА сировина, кулінарна (її двигун не
+        # добирає) та позасезонна свіжа форма не можуть бути «носіями»
+        # обіцяної ноти.
         forbidden_ids = _forbidden_material_ids(
             db, set(audience.get("forbidden_tags", []))
-        )
+        ) | _culinary_only_ids(db)
         season_blocked_ids = _out_of_season_fresh_ids(
             db, season if seasons.is_valid(season) else None
         )
@@ -1109,14 +1138,19 @@ def _finalize(
     # конфліктні ноти, отримують нижчий net і не обираються.
     effective_desired = desired_set - base_conflict_chars
 
+    # Скільки складових набирати: прагнемо TARGET_INGREDIENTS заради
+    # багатогранності смаку, але не вище за стелю цієї композиції (для
+    # «лаконічної» вона дорівнює MIN_INGREDIENTS, тож та лишається лаконічною).
+    target_count = min(TARGET_INGREDIENTS, max_ingredients)
+
     guard = 0
-    while auto_extend and guard < max_ingredients + 2 * MIN_INGREDIENTS:
+    while auto_extend and guard < max_ingredients + 2 * TARGET_INGREDIENTS:
         guard += 1
         count = _aromatic_count()
         if count >= max_ingredients:
             break
         target_char = _weakest_desired()
-        need_min = count < MIN_INGREDIENTS
+        need_min = count < target_count
         if target_char is None and not need_min:
             break  # достатньо складових і профіль уже виразний
 
@@ -1767,7 +1801,9 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
     forbidden_tags: Set[str] = (
         set(audience["forbidden_tags"]) if audience else set()
     )
-    forbidden_ids = _forbidden_material_ids(db, forbidden_tags)
+    # Кулінарну сировину (буряк, морква…) двигун сам не пропонує —
+    # лише користувач може додати її свідомо.
+    forbidden_ids = _forbidden_material_ids(db, forbidden_tags) | _culinary_only_ids(db)
 
     # Сезонність: блокуємо лише СВІЖУ форму позасезонної сировини при авто-доборі.
     season = req.season if seasons.is_valid(req.season) else None
@@ -2025,7 +2061,9 @@ def recompute(db: Session, req: RecomputeRequest) -> RecipeVariant:
 
     audience = get_audience(req.audience_id)
     forbidden_tags: Set[str] = set(audience["forbidden_tags"]) if audience else set()
-    forbidden_ids = _forbidden_material_ids(db, forbidden_tags)
+    # Кулінарну сировину (буряк, морква…) двигун сам не пропонує —
+    # лише користувач може додати її свідомо.
+    forbidden_ids = _forbidden_material_ids(db, forbidden_tags) | _culinary_only_ids(db)
 
     season = req.season if seasons.is_valid(req.season) else None
     season_blocked_ids = _out_of_season_fresh_ids(db, season)
@@ -2290,7 +2328,9 @@ def surprise(db: Session, req: SurpriseRequest) -> GenerateResponse:
     3 характеристик, з максимізацією збігу+балансу+гармонії."""
     audience = get_audience(req.audience_id)
     forbidden_tags: Set[str] = set(audience["forbidden_tags"]) if audience else set()
-    forbidden_ids = _forbidden_material_ids(db, forbidden_tags)
+    # Кулінарну сировину (буряк, морква…) двигун сам не пропонує —
+    # лише користувач може додати її свідомо.
+    forbidden_ids = _forbidden_material_ids(db, forbidden_tags) | _culinary_only_ids(db)
 
     season = req.season if seasons.is_valid(req.season) else None
     season_blocked_ids = _out_of_season_fresh_ids(db, season)

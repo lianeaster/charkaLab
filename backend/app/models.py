@@ -72,6 +72,10 @@ class RawMaterial(Base):
     # теги-протипоказання для фільтрів цільової аудиторії, через кому:
     # "pregnancy_unsafe,kids_unsafe,caffeine" (див. seed.MATERIAL_TAGS)
     tags: Mapped[str] = mapped_column(String(255), default="")
+    # максимальна доза відносно основної сировини для потужної сировини
+    # (хрін 0.05, шафран 0.02). None — обмежень нема, дозує лише двигун за
+    # влучністю в профіль. Це властивість самої сировини, а не алгоритму.
+    max_dose: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     compounds: Mapped[List["MaterialCompound"]] = relationship(
         back_populates="raw_material", cascade="all, delete-orphan"

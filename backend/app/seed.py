@@ -442,6 +442,30 @@ MATERIAL_PART = {
     "огіркова шкірка": "peel",
 }
 
+# Максимальна доза відносно основної сировини — для сировини ПОЗА таблицею
+# спецій (у спецій це поле "max_dose" у самій таблиці). Двигун дозує за
+# влучністю в профіль і нічого не знає про силу сировини, тому потужну треба
+# обмежити явно: без цього хрін отримував півдози від основної сировини.
+#
+# ЗНАЧЕННЯ Є ПЕРШИМ НАБЛИЖЕННЯМ і потребують звірки з практикою.
+MATERIAL_MAX_DOSE = {
+    # пекучі та сірчані — рахунок на грами
+    "хрін": 0.05,
+    # гіркі та потенційно небезпечні у великій дозі
+    "полин": 0.05,
+    "аїр болотний": 0.08,
+    "хінна кора": 0.08,
+    "горечавка жовта (тирлич)": 0.08,
+    "дубова кора": 0.08,
+    "звіробій": 0.12,
+    # інтенсивні трави та прянощі
+    "кубеба": 0.08,
+    "лаванда": 0.10,
+    "розмарин": 0.12,
+    "чебрець (тим'ян)": 0.15,
+    "душиця (орегано)": 0.15,
+}
+
 
 def _m(compound, form="dry", pit="na", intensity=1.0, part="whole"):
     return {
@@ -501,7 +525,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'аніс': {
-        "part": 'seed',
+        "part": 'seed', "max_dose": 0.15,
         "compounds": {
             'Анізиловий спирт': 2, 'анетол': 2,
             'α-пінен': 1, 'Анісовий альдегід': 1, 'естрагол': 1,
@@ -509,7 +533,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'асафетида': {
-        "part": 'resin',
+        "part": 'resin', "max_dose": 0.02,
         "compounds": {
             'α-пінен': 1, 'Діалілдисульфід': 1, 'Діалілтрисульфід': 1,
             'Евдесмол': 1, 'Оцимен': 1, 'Ферулова кислота': 1,
@@ -517,7 +541,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'бадьян': {
-        "part": 'fruit',
+        "part": 'fruit', "max_dose": 0.12,
         "compounds": {
             'анетол': 2,
             'α-пінен': 1, 'β-фелландрен': 1, 'Анісовий альдегід': 1,
@@ -534,7 +558,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'ваніль': {
-        "part": 'fruit',
+        "part": 'fruit', "max_dose": 0.08,
         "compounds": {
             'ванілін': 2,
             '4-Гідроксибензальдегід': 1, 'Анізиловий спирт': 1, 'Анісовий альдегід': 1,
@@ -542,7 +566,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'гвоздика': {
-        "part": 'flower',
+        "part": 'flower', "max_dose": 0.08,
         "compounds": {
             'евгенол': 2,
             'α-терпінеол': 1, 'Метилсаліцилат': 1, 'Фарнезен': 1,
@@ -550,7 +574,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'гірчиця': {
-        "part": 'seed',
+        "part": 'seed', "max_dose": 0.05,
         "compounds": {
             '4-Гідроксибензальдегід': 2, 'Ізотіоціанати': 2,
             '3-Метилбутаналь': 1, 'α-пінен': 1, 'Ізовалеральдегід': 1,
@@ -558,7 +582,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'духмяний перець': {
-        "part": 'berry',
+        "part": 'berry', "max_dose": 0.08,
         "aliases": ['ямайський перець', 'запашний перець', 'allspice'],
         "compounds": {
             'евгенол': 2,
@@ -577,7 +601,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'калган (альпінія)': {
-        "part": 'rhizome',
+        "part": 'rhizome', "max_dose": 0.1,
         "aliases": ['калган', 'альпінія'],
         "compounds": {
             'Галангалацетат': 2, 'цинеол (евкаліптол)': 2,
@@ -587,7 +611,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'кардамон': {
-        "part": 'seed',
+        "part": 'seed', "max_dose": 0.1,
         "compounds": {
             'Терпінілацетат': 2, 'цинеол (евкаліптол)': 2,
             'α-пінен': 1, 'α-терпінеол': 1, 'Альфа-фенілацетат': 1,
@@ -596,7 +620,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'кассія (китайська кориця)': {
-        "part": 'bark',
+        "part": 'bark', "max_dose": 0.1,
         "aliases": ['касія', 'кассія'],
         "compounds": {
             'цинамальдегід': 2,
@@ -614,7 +638,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'кориця цейлонська': {
-        "part": 'bark',
+        "part": 'bark', "max_dose": 0.12,
         "aliases": ['кориця'],
         "compounds": {
             'цинамальдегід': 2,
@@ -650,7 +674,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'куркума': {
-        "part": 'rhizome',
+        "part": 'rhizome', "max_dose": 0.1,
         "compounds": {
             'Куркумен': 2, 'ар-Турмерон': 2,
             'β-фелландрен': 1, 'Терпінен': 1, 'камфора': 1,
@@ -659,7 +683,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'лавровий лист': {
-        "part": 'leaf',
+        "part": 'leaf', "max_dose": 0.08,
         "compounds": {
             'цинеол (евкаліптол)': 2,
             'α-пінен': 1, 'α-терпінеол': 1, 'β-фелландрен': 1,
@@ -698,7 +722,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'мастика': {
-        "part": 'resin',
+        "part": 'resin', "max_dose": 0.08,
         "compounds": {
             'α-пінен': 2,
             'Терпінен': 1, 'камфен': 1, 'каріофілен': 1,
@@ -714,7 +738,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'мускатний горіх': {
-        "part": 'seed',
+        "part": 'seed', "max_dose": 0.06,
         "aliases": ['мускат'],
         "compounds": {
             'Елеміцин': 2, 'міристицин': 2,
@@ -725,7 +749,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'мускатний цвіт (мацис)': {
-        "part": 'seed',
+        "part": 'seed', "max_dose": 0.06,
         "aliases": ['мацис', 'мускатний цвіт'],
         "compounds": {
             'міристицин': 2, 'сабінен': 2,
@@ -761,7 +785,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'перець мелегета': {
-        "part": 'seed',
+        "part": 'seed', "max_dose": 0.06,
         "aliases": ['райські зерна', 'грайнс оф парадайз'],
         "compounds": {
             'Парадол': 2,
@@ -779,7 +803,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'сенегальський перець': {
-        "part": 'seed',
+        "part": 'seed', "max_dose": 0.06,
         "aliases": ['ашанті перець', 'уда'],
         "compounds": {
             'α-пінен': 2, 'Фенхон': 2, 'цинеол (евкаліптол)': 2,
@@ -789,7 +813,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'сичуанський перець': {
-        "part": 'berry',
+        "part": 'berry', "max_dose": 0.06,
         "compounds": {
             'Саншооли': 2,
             'α-терпінеол': 1, 'Цитронелаль': 1, 'гексенал': 1,
@@ -799,7 +823,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'солодка (лакриця)': {
-        "part": 'root',
+        "part": 'root', "max_dose": 0.1,
         "aliases": ['лакриця', 'локриця'],
         "compounds": {
             'гліциризин': 2,
@@ -860,7 +884,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'часник': {
-        "part": 'bulb', "fresh": True,
+        "part": 'bulb', "max_dose": 0.03, "fresh": True,
         "aliases": ['часник сушений'],
         "compounds": {
             'Діалілдисульфід': 2, 'Діалілтрисульфід': 2,
@@ -869,7 +893,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'червоний гострий перець': {
-        "part": 'fruit', "fresh": True,
+        "part": 'fruit', "max_dose": 0.03, "fresh": True,
         "aliases": ['чілі', 'чилі', 'перець чилі'],
         "compounds": {
             'капсаїцин': 2,
@@ -877,7 +901,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'чорний кардамон': {
-        "part": 'seed',
+        "part": 'seed', "max_dose": 0.06,
         "aliases": ['чорний кардамон бенгальський'],
         "compounds": {
             'цинеол (евкаліптол)': 2,
@@ -897,7 +921,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'чорний перець': {
-        "part": 'berry',
+        "part": 'berry', "max_dose": 0.08,
         "compounds": {
             'Ротундон': 2, 'піперин': 2,
             'α-пінен': 1, 'β-фелландрен': 1, 'Цимол': 1,
@@ -906,7 +930,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'шафран': {
-        "part": 'flower',
+        "part": 'flower', "max_dose": 0.02,
         "compounds": {
             'пікрокроцин': 2, 'сафраналь': 2,
             'α-пінен': 1, 'Ланієрон': 1, 'цинеол (евкаліптол)': 1,
@@ -922,7 +946,7 @@ SPICES: Dict[str, dict] = {
         },
     },
     'імбир': {
-        "part": 'rhizome', "fresh": True,
+        "part": 'rhizome', "max_dose": 0.15, "fresh": True,
         "compounds": {
             'джинджерол': 2, 'цингіберен': 2, 'шогаол': 2,
             'β-фелландрен': 1, 'Куркумен': 1, 'Парадол': 1,
@@ -951,12 +975,15 @@ def _spice_materials() -> List[dict]:
                 links.append(
                     _m(compound, "fresh", "na", round(inten * FRESH_FACTOR, 3), part=part)
                 )
-        out.append({
+        entry = {
             "name": name,
             "has_pit_variants": False,
             "aliases": list(spec.get("aliases", [])),
             "compounds": links,
-        })
+        }
+        if spec.get("max_dose") is not None:
+            entry["max_dose"] = spec["max_dose"]
+        out.append(entry)
     return out
 
 
@@ -2067,17 +2094,24 @@ def load_data(data: Dict) -> None:
         for m in data.get("materials", []):
             mat = db.scalar(select(RawMaterial).where(RawMaterial.name == m["name"]))
             tags = ",".join(material_tags.get(m["name"], []))
+            # Стеля дози: у спецій вона в самій таблиці, у решти — у
+            # MATERIAL_MAX_DOSE. Опис сировини може задати її й напряму.
+            max_dose = m.get("max_dose", MATERIAL_MAX_DOSE.get(m["name"]))
             if mat is None:
                 mat = RawMaterial(
                     name=m["name"],
                     has_pit_variants=bool(m.get("has_pit_variants", False)),
                     aliases=",".join(m.get("aliases", [])),
                     tags=tags,
+                    max_dose=max_dose,
                 )
                 db.add(mat)
                 db.flush()
-            elif tags and not mat.tags:
-                mat.tags = tags
+            else:
+                if tags and not mat.tags:
+                    mat.tags = tags
+                if max_dose is not None and mat.max_dose is None:
+                    mat.max_dose = max_dose
             # Уточнюємо частину рослини там, де в описі стоїть загальне
             # "whole" (див. MATERIAL_PART). Явно задані частини не чіпаємо.
             default_part = MATERIAL_PART.get(m["name"])

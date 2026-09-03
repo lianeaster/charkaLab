@@ -285,6 +285,7 @@ function VariantCard({
   forbiddenTags,
   onVariantChange,
   charIdByName,
+  characteristics,
 }) {
   const [pdfState, setPdfState] = useState("idle");
   const [editing, setEditing] = useState(false);
@@ -350,6 +351,7 @@ function VariantCard({
           variant={variant}
           request={variantRequest}
           forbiddenTags={forbiddenTags}
+          characteristics={characteristics}
           onApply={(nv) => {
             onVariantChange(nv);
             setEditing(false);
@@ -631,6 +633,7 @@ export default function RecipeResults({
   request,
   forbiddenTags,
   charIdByName,
+  characteristics,
 }) {
   const [variants, setVariants] = useState(result ? result.variants : []);
   useEffect(() => {
@@ -673,6 +676,7 @@ export default function RecipeResults({
           request={request}
           forbiddenTags={forbiddenTags}
           charIdByName={charIdByName}
+          characteristics={characteristics}
           onVariantChange={(nv) => handleVariantChange(i, nv)}
         />
       ))}

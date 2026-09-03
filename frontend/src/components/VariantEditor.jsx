@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import MaterialAutocomplete from "./MaterialAutocomplete";
+import ProfileSelector from "./ProfileSelector";
 
 // Основну сировину редагуємо окремим полем (вона йде в запит як main_material,
 // а не в загальний список), тож зі списку рядків її виключаємо. Підсолоджувач
@@ -24,6 +25,7 @@ export default function VariantEditor({
   variant,
   request,
   forbiddenTags,
+  characteristics,
   onApply,
   onCancel,
 }) {
@@ -32,6 +34,11 @@ export default function VariantEditor({
 
   const [main, setMain] = useState(null);
   const [rows, setRows] = useState([]);
+  // Бажаний профіль саме цього варіанта — його теж можна змінити перед
+  // перерахунком (для «Здивуй мене» він у кожного рецепта свій).
+  const [profile, setProfile] = useState(
+    () => request?.desired_characteristics || []
+  );
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
@@ -119,7 +126,7 @@ export default function VariantEditor({
             role: r.role || "additional",
           })),
         base_id: request.base_id ?? null,
-        desired_characteristics: request.desired_characteristics || [],
+        desired_characteristics: profile,
         audience_id: request.audience_id ?? null,
         season: request.season ?? null,
       };
@@ -198,6 +205,30 @@ export default function VariantEditor({
           Підсолоджувач ({sweeteners.map((s) => s.name).join(", ")}) додається й
           дозується автоматично під новий склад.
         </p>
+      )}
+
+      {characteristics?.length > 0 && (
+        <div className="mt-4 border-t border-charka-200 pt-3">
+          <div className="mb-2 flex items-baseline justify-between gap-2">
+            <h4 className="text-xs font-semibold uppercase tracking-wide text-charka-700">
+              Бажаний профіль цього рецепта
+            </h4>
+            <span className="text-[11px] text-stone-400">
+              {profile.length} обрано
+            </span>
+          </div>
+          <ProfileSelector
+            characteristics={characteristics}
+            selected={profile}
+            onChange={setProfile}
+          />
+          <p className="mt-2 text-[11px] leading-relaxed text-stone-400">
+            Профіль — це ціль, за якою рахуються збіг, дозування та баланс.
+            Нову сировину під нього тут не добирають: якщо додати ноту, якої
+            склад не дає, вона чесно з'явиться серед «не вистачає» — додайте
+            відповідний інгредієнт вище.
+          </p>
+        </div>
       )}
 
       {err && (

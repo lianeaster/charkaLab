@@ -404,6 +404,7 @@ export default function App() {
               request={reqSnapshot}
               forbiddenTags={forbiddenTags}
               charIdByName={charIdByName}
+              characteristics={characteristics}
             />
           </div>
         )}

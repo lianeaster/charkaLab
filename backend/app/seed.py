@@ -341,6 +341,9 @@ MATERIAL_PART = {
     "донник": "herb",
     # --- смоли ---
     "мастика": "resin", "асафетида": "resin",
+    # --- інші частини ---
+    "часник": "bulb", "ревінь": "stalk", "селера стеблова": "stalk",
+    "огіркова шкірка": "peel",
 }
 
 
@@ -875,6 +878,12 @@ MATERIALS = [
         _m("антоціани", "dry", "without", 0.6), _m("бензальдегід", "dry", "without", 0.3),
         # екстракт / настоянка
         _m("антоціани", "extract", "na", 1.0), _m("бензальдегід", "extract", "na", 0.4),
+        # вишневий лист — традиційний у наливках і настоянках окремо від ягоди:
+        # дає сінно-ванільний кумарин і мигдальний тон, без ягідної кислоти
+        _m("кумарин", "fresh", "na", 0.7, part="leaf"),
+        _m("бензальдегід", "fresh", "na", 0.3, part="leaf"),
+        _m("кумарин", "dry", "na", 0.9, part="leaf"),
+        _m("бензальдегід", "dry", "na", 0.35, part="leaf"),
     ]},
     {"name": "абрикос", "has_pit_variants": True, "aliases": ["курага"], "compounds": [
         # свіжий без кісточки — кисло-фруктовий
@@ -1329,6 +1338,26 @@ for _name, _tags in spice_data.NEW_TAGS.items():
 # решта сировини (фрукти, ягоди, овочі, трави поза таблицею) лишається.
 _SPICE_MATERIALS = spice_data.build_spice_materials()
 _MANAGED_SPICE_NAMES = spice_data.managed_names()
+
+# Таблиця спецій описує лише ОСНОВНУ частину сировини (насіння, кору, корінь)
+# і не задає part узагалі. Раніше вона заміщала рукописні записи ЦІЛКОМ — а
+# разом з ними зникали інші вживані частини тієї ж рослини: зелень коріандру
+# (кінза) з геть іншим ароматом, ніж насіння, зелень кропу та фенхелю. Тому
+# тепер зберігаємо ті inline-звʼязки, чия частина відрізняється від основної.
+_inline_by_name = {m["name"]: m for m in MATERIALS}
+for _sm in _SPICE_MATERIALS:
+    _inline = _inline_by_name.get(_sm["name"])
+    if _inline is None:
+        continue
+    _main_part = MATERIAL_PART.get(_sm["name"], "whole")
+    _extra = [
+        link
+        for link in _inline.get("compounds", [])
+        if link.get("part", "whole") not in ("whole", _main_part)
+    ]
+    if _extra:
+        _sm["compounds"] = _sm["compounds"] + _extra
+
 MATERIALS = [m for m in MATERIALS if m["name"] not in _MANAGED_SPICE_NAMES]
 MATERIALS = MATERIALS + _SPICE_MATERIALS
 

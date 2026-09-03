@@ -98,6 +98,9 @@ export const PART_LABELS = {
   needle: "хвоя",
   rhizome: "кореневище",
   resin: "смола",
+  bulb: "цибулина",
+  stalk: "стебло",
+  peel: "шкірка",
 };
 
 export const PIT_LABELS = {

@@ -163,7 +163,13 @@ npm run dev
 ```
 
 - `part`: `whole` | `flower` | `zest` | `fruit` | `berry` | `leaf` | `root` | `bark` |
-  `seed` | `herb` | `needle` | `rhizome` | `resin`
+  `seed` | `herb` | `needle` | `rhizome` | `resin` | `bulb` | `stalk` | `peel`.
+  Частина, яку реально беруть у настоянку: коріандр — `seed`, ірис — `rhizome`,
+  кориця — `bark`. Одна сировина може мати кілька частин із **різними**
+  профілями (коріандр: `seed` — тепло-цитрусовий, `herb` — зелена кінза;
+  вишня: `fruit` і `leaf`). Загальний `whole` лишається тільки для того, що не
+  є частиною рослини (мед, палений цукор). Відповідність задає `MATERIAL_PART`
+  у [backend/app/seed.py](backend/app/seed.py).
 - `form`: `fresh` | `dry` | `extract` | `oil` | `juice`
 - `pit`: `with` | `without` | `na`
 - `material_tags`: теги-протипоказання ЦА за назвою сировини

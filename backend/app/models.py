@@ -30,10 +30,13 @@ PART_HERB = "herb"
 PART_NEEDLE = "needle"
 PART_RHIZOME = "rhizome"
 PART_RESIN = "resin"
+PART_BULB = "bulb"      # цибулина (часник)
+PART_STALK = "stalk"    # черешок/стебло (ревінь, селера)
+PART_PEEL = "peel"      # шкірка нецитрусових (огірок)
 PARTS = (
     PART_WHOLE, PART_FLOWER, PART_ZEST, PART_FRUIT, PART_BERRY, PART_LEAF,
     PART_ROOT, PART_BARK, PART_SEED, PART_HERB, PART_NEEDLE, PART_RHIZOME,
-    PART_RESIN,
+    PART_RESIN, PART_BULB, PART_STALK, PART_PEEL,
 )
 
 # pit values

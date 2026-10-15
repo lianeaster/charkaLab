@@ -5,7 +5,7 @@ from .database import Base, engine
 from .routers import audiences, materials, meta, recipes
 from .seed import seed_if_empty
 
-app = FastAPI(title="charkaLab API", version="1.0.0")
+app = FastAPI(title="charkaLab API", version="1.1.0")
 
 app.add_middleware(
     CORSMiddleware,

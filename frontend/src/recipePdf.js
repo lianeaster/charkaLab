@@ -1,5 +1,6 @@
 import { jsPDF } from "jspdf";
 import { PYRAMID_META, ROLE_LABELS, variantLabel } from "./api";
+import { EQUIPMENT, pickOption, readProcessPrefs } from "./processPrefs";
 
 // Кириличний шрифт для jsPDF (вбудовані шрифти кирилиці не мають).
 // Тягнемо TTF із /fonts один раз і кешуємо у base64.
@@ -169,6 +170,83 @@ export async function downloadRecipePdf(result, variant, index = 0) {
       color: [110, 100, 92],
       gap: 4,
     });
+  }
+
+  // Технологія приготування: просунутий рівень, якщо його обрано на екрані
+  const proc = variant.process;
+  const prefs = readProcessPrefs();
+  if (proc && proc.lab && prefs.level === "lab") {
+    const lab = proc.lab;
+    w.heading("Технологія приготування — фракційна мацерація");
+    const eqNames = EQUIPMENT.filter((e) => prefs.equipment.includes(e.key)).map(
+      (e) => e.label
+    );
+    w.text(`Обладнання: ${eqNames.length ? eqNames.join(", ") : "немає"}`, {
+      size: 10,
+      gap: 4,
+    });
+    for (const f of lab.fractions) {
+      w.text(f.title, { size: 10.5, style: "bold", gap: 2 });
+      w.text(
+        `${f.ingredients.join(", ")} · сировина : спирт — ${f.ratio} · спирт ${f.abv}`,
+        { size: 10, gap: 2 }
+      );
+      for (const p of f.pretreatments.filter((p) =>
+        prefs.equipment.includes(p.equipment)
+      )) {
+        w.text(`Спершу: ${p.title}`, { size: 10, style: "bold", indent: 6, gap: 1 });
+        for (const s of p.steps) w.text(`•  ${s}`, { size: 10, indent: 6, gap: 2 });
+      }
+      const chosen = pickOption(f, prefs.equipment);
+      w.text(chosen.title, { size: 10, style: "bold", indent: 6, gap: 1 });
+      for (const s of chosen.steps) w.text(`•  ${s}`, { size: 10, indent: 6, gap: 2 });
+    }
+    if (lab.blend?.length > 1) {
+      w.text("Пробний купаж", { size: 10, style: "bold", gap: 2 });
+      for (const b of lab.blend) {
+        w.text(`•  ${b.fraction} — ${b.target}${b.start ? ` (${b.start})` : ""}`, {
+          size: 10,
+          indent: 6,
+          gap: 2,
+        });
+      }
+    }
+    for (const s of lab.steps || []) w.text(`•  ${s}`, { size: 10, indent: 6, gap: 2 });
+    for (const c of lab.cautions || []) {
+      w.text(`!  ${c}`, { size: 10, color: [146, 64, 14], indent: 6, gap: 2 });
+    }
+  } else if (proc) {
+    w.heading("Технологія приготування");
+    w.text(`${proc.method}${proc.total_time ? ` · ${proc.total_time}` : ""}`, {
+      size: 10.5,
+      style: "bold",
+      gap: 2,
+    });
+    if (proc.temperature)
+      w.text(`Режим: ${proc.temperature}`, { size: 10, gap: 2 });
+    if (proc.method_note)
+      w.text(proc.method_note, { size: 9.5, color: [110, 100, 92], gap: 4 });
+    if (proc.schedule?.length) {
+      w.text("Графік закладання", { size: 10, style: "bold", gap: 2 });
+      for (const t of proc.schedule) {
+        const taste = t.taste_from ? ` (${t.taste_from})` : "";
+        w.text(`•  ${t.name} — ${t.start}, ${t.duration}${taste}`, {
+          size: 10,
+          indent: 6,
+          gap: 2,
+        });
+      }
+    }
+    for (const stage of proc.stages || []) {
+      if (!stage.steps?.length) continue;
+      w.text(stage.title, { size: 10, style: "bold", gap: 2 });
+      for (const s of stage.steps) {
+        w.text(`•  ${s}`, { size: 10, indent: 6, gap: 2 });
+      }
+    }
+    for (const c of proc.cautions || []) {
+      w.text(`!  ${c}`, { size: 10, color: [146, 64, 14], indent: 6, gap: 2 });
+    }
   }
 
   // Піраміда нот

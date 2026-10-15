@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { PYRAMID_META, ROLE_LABELS, variantLabel } from "../api";
 import { downloadRecipePdf } from "../recipePdf";
 import InfoTip from "./InfoTip";
+import ProcessCard from "./ProcessCard";
 import VariantEditor from "./VariantEditor";
 
 const PROFILE_BARS_HINT =
@@ -518,6 +519,8 @@ function VariantCard({
           )}
         </div>
       )}
+
+      <ProcessCard process={variant.process} defaultOpen={index === 0} />
 
       <Pyramid pyramid={variant.pyramid} />
 

@@ -186,6 +186,83 @@ class RecipeSimilarity(BaseModel):
     note: str = ""
 
 
+class IngredientTiming(BaseModel):
+    """Коли й наскільки закладати інгредієнт у спільну банку."""
+
+    name: str
+    class_title: str  # клас мацерації: «тверді прянощі», «цедра цитрусових»…
+    duration: str  # орієнтир: «3–7 діб», «12–48 год»
+    start: str  # «з першого дня», «на 15-й день», «за ~12 год до зняття»
+    taste_from: str = ""  # «пробувати з 10 діб від старту»
+
+
+class ProcessStage(BaseModel):
+    key: str  # prep | maceration | separation | finishing | stabilization | rest
+    title: str
+    steps: List[str] = Field(default_factory=list)
+
+
+class MethodOption(BaseModel):
+    """Один спосіб обробити фракцію — під конкретне обладнання."""
+
+    # ultrasound | vacuum | sousvide | freezer | enzymes | still | siphon | none
+    equipment: str
+    title: str
+    steps: List[str] = Field(default_factory=list)
+
+
+class ProcessFraction(BaseModel):
+    """Окремий настій одного класу сировини (просунутий рівень)."""
+
+    key: str
+    title: str
+    ingredients: List[str] = Field(default_factory=list)
+    ratio: str = ""  # «1 кг на 1 л»
+    abv: str = ""  # міцність спирту для заливання
+    # попередня обробка (заморожування, ферменти) — кожна під своє обладнання
+    pretreatments: List[MethodOption] = Field(default_factory=list)
+    # способи мацерації за спаданням переваги; останній — без обладнання
+    options: List[MethodOption] = Field(default_factory=list)
+
+
+class BlendPart(BaseModel):
+    """Фракція в пробному купажі: наскільки гучно має звучати й з чого почати.
+
+    Літрів не рахуємо: доза в складі — частка внеску в аромат, а не маса, і без
+    даних про силу сировини на грам перевести її в об'єм фракції не можна."""
+
+    fraction: str
+    target: str  # «основа купажу», «≈ половина сили основи», «легкий акцент»
+    start: str = ""  # «додавати по 1 мл на 100 мл основи»
+
+
+class LabProcess(BaseModel):
+    """Просунутий рівень: фракційна мацерація, апаратні методи, купаж."""
+
+    fractions: List[ProcessFraction] = Field(default_factory=list)
+    blend: List[BlendPart] = Field(default_factory=list)
+    steps: List[str] = Field(default_factory=list)  # зняття, купаж
+    cautions: List[str] = Field(default_factory=list)
+    basis: List[str] = Field(default_factory=list)
+
+
+class ProcessCard(BaseModel):
+    """Технологічна карта: як готувати склад (див. services/process.py)."""
+
+    level: str = "home"  # home — орієнтири; lab — точні режими апаратних методів
+    method: str
+    method_note: str = ""
+    temperature: str = ""
+    total_time: str = ""
+    schedule: List[IngredientTiming] = Field(default_factory=list)
+    stages: List[ProcessStage] = Field(default_factory=list)
+    cautions: List[str] = Field(default_factory=list)
+    basis: List[str] = Field(default_factory=list)
+    # просунутий рівень (фракції, обладнання, купаж); None — для безалкогольної
+    # основи, де апаратна мацерація не має сенсу
+    lab: Optional[LabProcess] = None
+
+
 class RecipeVariant(BaseModel):
     title: str
     # бажаний профіль саме цього варіанта (для «Здивуй мене» — свій на кожен
@@ -213,6 +290,8 @@ class RecipeVariant(BaseModel):
     # схожі відомі рецептури (від найближчої); порожньо — нічого не впізнано.
     # Композиція може нагадувати кілька напоїв, тож це список, а не один збіг.
     similarities: List[RecipeSimilarity] = Field(default_factory=list)
+    # як готувати: підготовка, мацерація, фільтрація, купаж, відпочинок
+    process: Optional[ProcessCard] = None
 
 
 class BaseInfluence(BaseModel):

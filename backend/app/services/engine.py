@@ -42,7 +42,8 @@ from ..models import (
 from ..audiences import get_audience
 from .. import seasons
 from .. import harmony
-from . import similarity
+from ..seed import SPICES
+from . import process, process_lab, similarity
 from ..schemas import (
     AudienceInfo,
     BaseInfluence,
@@ -1923,6 +1924,67 @@ def _base_contribution(
     return list(bp["profile_contrib"]) if bp else []
 
 
+# Сировина з таблиці спецій: у технологічній карті сухі «ягоди» й плоди з
+# неї (перець, ялівець, бадьян) — прянощі, а не сушені фрукти.
+SPICE_NAMES = frozenset(SPICES)
+
+
+def _variant_compounds(db: Session, material_id: int, part: str, form: str, pit: str) -> Set[str]:
+    """Назви сполук конкретного варіанта сировини."""
+    if material_id <= 0:
+        return set()
+    rows = db.scalars(
+        select(MaterialCompound).where(
+            MaterialCompound.raw_material_id == material_id,
+            MaterialCompound.part == part,
+            MaterialCompound.form == form,
+            MaterialCompound.pit == pit,
+        )
+    ).all()
+    names = set()
+    for mc in rows:
+        compound = db.get(AromaCompound, mc.compound_id)
+        if compound is not None:
+            names.add(compound.name)
+    return names
+
+
+def _finish_variant(
+    db: Session, variant: RecipeVariant, base_name: Optional[str], desired: List[str],
+) -> None:
+    """Останні штрихи готового варіанта: схожість із відомими напоями та
+    технологічна карта (як його готувати)."""
+    similarity.check(variant, base_name)
+    items = [
+        process.ProcessItem(
+            name=m.name, part=m.part, form=m.form, pit=m.pit, role=m.role,
+            chans=(
+                _option_breakdown(db, m.material_id).get((m.part, m.form, m.pit), {})
+                if m.material_id > 0 else {}
+            ),
+            compounds=_variant_compounds(db, m.material_id, m.part, m.form, m.pit),
+        )
+        for m in variant.materials
+    ]
+    base_abv = _base_abv(base_name) if base_name else None
+    variant.process = process.build(
+        items,
+        base_name=base_name,
+        base_abv=base_abv,
+        desired=desired,
+        spice_names=SPICE_NAMES,
+    )
+    # Просунутий рівень (фракції на спирті, апаратні методи) — лише для
+    # спиртової основи: у вині й безалкогольній основі міцність фракцій і
+    # гаряча чи вакуумна мацерація не мають сенсу.
+    if base_abv is None or base_abv >= 20:
+        variant.process.lab = process_lab.build(
+            items,
+            [process.classify(it, SPICE_NAMES) for it in items],
+            [m.amount for m in variant.materials],
+        )
+
+
 def _base_abv(base_name: Optional[str]) -> int:
     """Міцність основи (%). Дистилят — концентрований спирт (~75%); решта — за
     BASE_PROFILES; безалкогольні та невідомі основи → 0."""
@@ -2241,7 +2303,7 @@ def generate(db: Session, req: GenerateRequest) -> GenerateResponse:
     # Веб-пошук на схожість із відомими рецептами/комерційними напоями —
     # лише для фінальних відібраних варіантів (не для всього пулу кандидатів).
     for v in unique:
-        similarity.check(v, base_name)
+        _finish_variant(db, v, base_name, desired_names)
 
     feasibility = _feasibility(db, chosen, desired_names, unique, forbidden_ids)
     base_infl = _base_influence(
@@ -2409,7 +2471,7 @@ def recompute(db: Session, req: RecomputeRequest) -> RecipeVariant:
     )
     title = req.title or "Відредагована композиція"
     variant = _make_variant(db, title, sel, desired_names, notes)
-    similarity.check(variant, base_name)
+    _finish_variant(db, variant, base_name, desired_names)
 
     # Сезонні попередження: користувач міг додати в редакторі свіжу сировину
     # поза сезоном — чесно попереджаємо (як робить generate у банері сезону).
@@ -2709,7 +2771,7 @@ def surprise(db: Session, req: SurpriseRequest) -> GenerateResponse:
             break
 
     for v in variants:
-        similarity.check(v, base_name)
+        _finish_variant(db, v, base_name, v.desired)
 
     base_infl = _base_influence(base_name, set(), variants)
 

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -169,11 +170,16 @@ def _split_on_off(
 ) -> Tuple[float, float]:
     """Розкласти внесок ноти на «корисний» (on) і «шум» (off) з урахуванням
     спорідненості. Бажана нота — повністю on; солодкість — нейтральна; споріднена
-    до якоїсь бажаної — частково on, частково off; решта — повністю off."""
-    if name in desired_set:
-        return value, 0.0
+    до якоїсь бажаної — частково on, частково off; решта — повністю off.
+
+    Солодкість нейтральна навіть тоді, коли її прямо просять: бажаний
+    «солодкий» доводить підсолоджувач на кроці балансу. Інакше найсолодша
+    сировина (палений цукор, фінік) вигравала б добір за будь-якого профілю
+    з «солодким» і тягнула б у склад свої карамельні ноти."""
     if name == SWEET:
         return 0.0, 0.0
+    if name in desired_set:
+        return value, 0.0
     best_kin = 0.0
     for d in desired_set:
         w = KIN.get(d, {}).get(name, 0.0)
@@ -182,6 +188,68 @@ def _split_on_off(
     if best_kin > 0.0:
         return value * best_kin, value * (1.0 - best_kin)
     return 0.0, value
+
+
+# Спорідненість із основною сировиною. Без неї добір дивився лише на бажаний
+# профіль, тож під ту саму ноту щоразу брав того самого «найкращого носія»
+# незалежно від того, що в основі: вишня, айва чи лимон отримували однакові
+# додатки. Тепер серед кандидатів, що дають ноту не гірше за AFFINITY_SHORTLIST
+# від найсильнішого, перевагу має ароматично ближчий до основи — принцип
+# food pairing (Ahn et al. 2011: сировина зі спільними аромасполуками
+# поєднується краще). Міра — косинус ароматичних векторів (0..1).
+AFFINITY_SHORTLIST = 0.6
+# У доборі гармонізатора й заготовки чистота внеску множиться на
+# (AFFINITY_BASE + спорідненість): спорідненість підсилює, але не скасовує net.
+AFFINITY_BASE = 0.5
+
+AromaVector = Dict[str, float]
+
+
+def _aroma_vector(chans: Dict[str, float]) -> AromaVector:
+    """Ароматична частина розкладки опції: {характеристика: внесок}."""
+    return {
+        key.split("::", 1)[1]: value
+        for key, value in chans.items()
+        if key.startswith("aroma::") and value > 0
+    }
+
+
+def _affinity(chans: Dict[str, float], anchor: Optional[AromaVector]) -> float:
+    """Косинус між ароматом опції та ароматом основної сировини (0..1).
+
+    Без якоря (основна без аромату чи виклик поза генерацією) — 0, і добір
+    поводиться як раніше."""
+    if not anchor:
+        return 0.0
+    vec = _aroma_vector(chans)
+    dot = sum(value * anchor.get(name, 0.0) for name, value in vec.items())
+    if dot <= 0:
+        return 0.0
+    norm = math.sqrt(sum(v * v for v in vec.values())) * math.sqrt(
+        sum(v * v for v in anchor.values())
+    )
+    return dot / norm if norm else 0.0
+
+
+def _pair_weighted(net: float, chans: Dict[str, float], anchor: Optional[AromaVector]) -> float:
+    """net, зважений спорідненістю: спорідненість завжди на користь опції.
+
+    Кандидати на закриття прогалин бувають шумними (net < 0) — тоді
+    спорідненість зменшує штраф, а не роздуває його."""
+    if not anchor:
+        return net
+    factor = AFFINITY_BASE + _affinity(chans, anchor)
+    return net * factor if net >= 0 else net / factor
+
+
+def _main_anchor(db: Session, selections: List["ResolvedSelection"]) -> Optional[AromaVector]:
+    """Ароматичний вектор основної сировини (якір спорідненості) або None."""
+    for s in selections:
+        if s.role == "main" and s.material_id > 0:
+            chans = _option_breakdown(db, s.material_id).get((s.part, s.form, s.pit), {})
+            return _aroma_vector(chans) or None
+    return None
+
 
 # Дозування інгредієнтів. Основна сировина йде в повному обсязі (MAIN_AMOUNT),
 # а дозу решти алгоритм підбирає сам у межах [DOSE_MIN, DOSE_MAX] залежно від
@@ -900,12 +968,14 @@ def _find_candidates(
     exclude_ids: Set[int],
     desired_set: Set[str],
     season_blocked_ids: Set[int] = frozenset(),
+    anchor: Optional[AromaVector] = None,
 ) -> List[Tuple[int, str, str, str, float, Set[str]]]:
     """Кандидати, що закривають прогалини профілю з мінімумом сторонніх нот.
 
     Повертає list of (material_id, part, form, pit, net, covered_chars), де net —
-    «чистота» внеску (корисне мінус шум). Сортуємо: спершу скільки прогалин
-    закриває, далі — вищий net (менше перебиває бажаний профіль).
+    «чистота» внеску (корисне мінус шум), зважена спорідненістю з основною
+    сировиною (`anchor`). Сортуємо: спершу скільки прогалин закриває, далі —
+    вищий net (менше перебиває бажаний профіль і ближче до основи).
     """
     if not missing_names:
         return []
@@ -941,6 +1011,7 @@ def _find_candidates(
             if not covered:
                 continue
             _on, _off, net = _option_net(chans, desired_set)
+            net = _pair_weighted(net, chans, anchor)
             sort_key = (len(covered), net)
             if best is None or sort_key > best[0]:
                 best = (sort_key, part, form, pit, net, covered)
@@ -1052,13 +1123,16 @@ def _best_for_char(
     exclude_ids: Set[int],
     desired_set: Set[str],
     season_blocked_ids: Set[int] = frozenset(),
+    anchor: Optional[AromaVector] = None,
 ) -> Optional[Tuple[int, str, str, str, float]]:
     """Сировина, що дає НАЙБІЛЬШЕ саме характеристики `char` (аромат+смак),
     майже не шумлячи (net > 0). Повертає (mid, part, form, pit, char_value).
 
     На відміну від _find_candidates, ранжує за фактичним внеском у цільову ноту,
     а не за загальним net профілю — щоб не брати ягоду з мізерним «свіжим», але
-    потужним «ягідним».
+    потужним «ягідним». З якорем (`anchor`) серед достатньо сильних носіїв (не
+    слабших за AFFINITY_SHORTLIST від найсильнішого) бере найспорідненішого з
+    основною сировиною; без якоря — просто найсильнішого, як і раніше.
     """
     char_id = db.scalar(select(Characteristic.id).where(Characteristic.name == char))
     if char_id is None:
@@ -1075,8 +1149,8 @@ def _best_for_char(
         )
         .distinct()
     ).all()
-    best: Optional[Tuple[int, str, str, str, float]] = None
-    best_key: Optional[Tuple[float, float]] = None
+    # (спорідненість, сила ноти, net, опція)
+    pool: List[Tuple[float, float, float, Tuple[int, str, str, str, float]]] = []
     for mid in material_ids:
         for (part, form, pit), chans in _option_breakdown(db, mid).items():
             if form == FORM_FRESH and mid in season_blocked_ids:
@@ -1089,11 +1163,20 @@ def _best_for_char(
                 continue  # шумна — додасть більше стороннього, ніж корисного
             if _overpowers(chans, desired_set):
                 continue  # її стороння нота перебила б користь — не беремо
-            key = (round(tval, 3), round(net, 3))
-            if best_key is None or key > best_key:
-                best_key = key
-                best = (mid, part, form, pit, tval)
-    return best
+            pool.append((
+                round(_affinity(chans, anchor), 3), round(tval, 3), round(net, 3),
+                (mid, part, form, pit, tval),
+            ))
+    if not pool:
+        return None
+    strongest = max(p[1] for p in pool)
+    floor = AFFINITY_SHORTLIST * strongest
+    if strongest >= MIN_REINFORCE:
+        # спорідненіший, але слабкий носій не має підмінити придатного:
+        # тоді нота вважалася б «непідсилюваною»
+        floor = max(floor, MIN_REINFORCE)
+    strong = [p for p in pool if p[1] >= floor]
+    return max(strong, key=lambda p: p[:3])[3]
 
 
 def _find_harmony(
@@ -1101,9 +1184,11 @@ def _find_harmony(
     desired_set: Set[str],
     exclude_ids: Set[int],
     season_blocked_ids: Set[int] = frozenset(),
+    anchor: Optional[AromaVector] = None,
 ) -> Optional[Tuple[int, str, str, str, bool]]:
     """Сировина для гармонії (мін. інгредієнтів): підсилює профіль, не додає гіркоти.
 
+    Ранжує за net, зваженим спорідненістю з основною сировиною (`anchor`).
     Повертає (material_id, part, form, pit, reinforces_desired).
     """
     material_ids = db.scalars(
@@ -1124,6 +1209,7 @@ def _find_harmony(
                 continue
             if _overpowers(chans, desired_set):
                 continue  # перебиває профіль — не додаємо заради кількості
+            net = _pair_weighted(net, chans, anchor)
             if best is None or net > best[5]:
                 best = (mid, part, form, pit, True, net)
     if best is None:
@@ -1253,10 +1339,17 @@ def _finalize(
     # Ноти, які наявна сировина не здатна суттєво підсилити — більше не пробуємо
     # (щоб не додавати купу інгредієнтів, що нібито «підсилюють», але дають ~0).
     exhausted: Set[str] = set()
+    # Аромат основної сировини: добір віддає перевагу спорідненим із нею носіям.
+    anchor = _main_anchor(db, selections)
 
     def _weakest_desired() -> Optional[str]:
         prof = _build_profile(db, selections)
-        weak = [(c, prof.total(c)) for c in desired_set if c not in exhausted]
+        # «солодкий» доводить підсолоджувач на кроці балансу (3) — ароматичною
+        # сировиною його не підсилюємо, інакше в склад щоразу йшов палений цукор
+        weak = [
+            (c, prof.total(c)) for c in desired_set
+            if c not in exhausted and c != SWEET
+        ]
         weak = [(c, v) for c, v in weak if v < TARGET_STRENGTH]
         if not weak:
             return None
@@ -1289,7 +1382,8 @@ def _finalize(
         #     сировина РЕАЛЬНО дає достатньо саме цієї ноти (а не мізер).
         if target_char is not None:
             cand = _best_for_char(
-                db, target_char, block, effective_desired, season_blocked_ids
+                db, target_char, block, effective_desired, season_blocked_ids,
+                anchor=anchor,
             )
             if cand is not None and cand[4] >= MIN_REINFORCE:
                 mid, part, form, pit = cand[0], cand[1], cand[2], cand[3]
@@ -1302,7 +1396,9 @@ def _finalize(
         # 1б) для добору мінімуму — будь-який чистий гармонійний інгредієнт
         added_for_complexity = False
         if mid is None:
-            harm = _find_harmony(db, effective_desired, block, season_blocked_ids)
+            harm = _find_harmony(
+                db, effective_desired, block, season_blocked_ids, anchor=anchor
+            )
             if harm is not None:
                 mid, part, form, pit, _reinf = harm
         # 1в) підсилювати профіль уже нічим і гармонізатора нема — але склад
@@ -1363,7 +1459,8 @@ def _finalize(
         if base_aroma < BASE_MIN:
             block = used | honey_block
             for c in _find_candidates(
-                db, effective_desired, block, effective_desired, season_blocked_ids
+                db, effective_desired, block, effective_desired, season_blocked_ids,
+                anchor=anchor,
             ):
                 if c[4] <= 0:  # шумна — пропускаємо
                     continue
@@ -1901,7 +1998,10 @@ def _greedy_seed(
     seed = list(chosen)
     if not base_missing:
         return seed
-    candidates = _find_candidates(db, base_missing, exclude, desired_set, season_blocked_ids)
+    candidates = _find_candidates(
+        db, base_missing, exclude, desired_set, season_blocked_ids,
+        anchor=_main_anchor(db, chosen),
+    )
     still = set(base_missing)
     used = set(exclude)
     added = 0

@@ -84,6 +84,8 @@ MATERIAL_SEASONS: Dict[str, Set[str]] = {
     "перець солодкий": SUMMER_AUTUMN,
     "ревінь": SPRING_SUMMER,           # квітень–червень
     "гарбуз": AUTUMN_WINTER,
+    # зелений плід для горіхівки — кінець червня; ядро сушене, цілорічне
+    "волоський горіх": {SEASON_SUMMER},
 }
 
 
